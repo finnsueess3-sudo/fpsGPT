@@ -130,6 +130,9 @@ canvas{display:block}
     display:none;
     z-index:60;
 }
+#deathOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(0,0,0,.62);backdrop-filter:blur(2px);z-index:95;pointer-events:none;}
+#deathTitle{font-size:76px;font-weight:900;letter-spacing:10px;color:#fff;text-shadow:0 5px 22px #000;margin-bottom:12px;}
+#deathHint{font-size:20px;letter-spacing:3px;color:#e7eef0;text-shadow:0 3px 10px #000;}
 #reload{
     position:fixed;
     left:50%;
@@ -302,6 +305,7 @@ C Molotov: 2
 
 <div id="reload">RELOADING</div>
 <div id="status"></div>
+<div id="deathOverlay"><div id="deathTitle">TOT</div><div id="deathHint">R — RESPAWN</div></div>
 <div id="hitmarker"></div>
 <div id="bloodVignette"></div>
 <div id="online">🟡 FIREBASE: VERBINDET...</div>
@@ -1345,59 +1349,86 @@ const multiplayer = {
 
 function makeRemotePlayer(data){
     const root = new THREE.Group();
+    root.userData.dead=false;
 
-    const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(.32,.95,5,10),
-        new THREE.MeshStandardMaterial({color:0x42a5f5,roughness:.8})
-    );
-    body.position.y=.95;
+    const clothMat=new THREE.MeshStandardMaterial({color:0x33414a,roughness:.82,metalness:.05});
+    const vestMat=new THREE.MeshStandardMaterial({color:0x20282d,roughness:.9});
+    const skinMatR=new THREE.MeshStandardMaterial({color:0xc78968,roughness:.9});
+    const bootMat=new THREE.MeshStandardMaterial({color:0x121518,roughness:.92});
+    const metalMat=new THREE.MeshStandardMaterial({color:0x252a2d,roughness:.42,metalness:.72});
 
-    const head = new THREE.Mesh(
-        new THREE.SphereGeometry(.25,12,10),
-        new THREE.MeshStandardMaterial({color:0xf0c8a0,roughness:.9})
-    );
-    head.position.y=1.72;
+    function capsule(r,len,mat){
+        const m=new THREE.Mesh(new THREE.CapsuleGeometry(r,len,5,10),mat);
+        m.castShadow=true; m.receiveShadow=true; return m;
+    }
+    function box(x,y,z,mat){
+        const m=new THREE.Mesh(new THREE.BoxGeometry(x,y,z),mat);
+        m.castShadow=true; m.receiveShadow=true; return m;
+    }
 
-    const gun = new THREE.Mesh(
-        new THREE.BoxGeometry(.12,.12,.7),
-        new THREE.MeshStandardMaterial({color:0x20242a,roughness:.65,metalness:.35})
-    );
-    gun.position.set(.36,1.28,-.38);
-    gun.rotation.x=-.05;
+    // Full articulated character hierarchy.
+    const pelvis=new THREE.Group(); pelvis.position.y=.72;
+    const spine=new THREE.Group(); spine.position.y=.28;
+    const chest=box(.58,.62,.38,vestMat); chest.position.y=.05; spine.add(chest);
+    const neck=new THREE.Group(); neck.position.y=.38; spine.add(neck);
+    const head=new THREE.Mesh(new THREE.SphereGeometry(.235,16,12),skinMatR); head.position.y=.14; head.castShadow=true; neck.add(head);
+
+    const shoulderL=new THREE.Group(); shoulderL.position.set(-.35,.25,0); spine.add(shoulderL);
+    const shoulderR=new THREE.Group(); shoulderR.position.set(.35,.25,0); spine.add(shoulderR);
+    const upperL=capsule(.105,.36,clothMat); upperL.position.y=-.19; shoulderL.add(upperL);
+    const upperR=capsule(.105,.36,clothMat); upperR.position.y=-.19; shoulderR.add(upperR);
+    const elbowL=new THREE.Group(); elbowL.position.y=-.38; shoulderL.add(elbowL);
+    const elbowR=new THREE.Group(); elbowR.position.y=-.38; shoulderR.add(elbowR);
+    const foreL=capsule(.085,.34,skinMatR); foreL.position.y=-.18; elbowL.add(foreL);
+    const foreR=capsule(.085,.34,skinMatR); foreR.position.y=-.18; elbowR.add(foreR);
+    const handL=new THREE.Mesh(new THREE.SphereGeometry(.10,10,8),skinMatR); handL.position.y=-.37; elbowL.add(handL);
+    const handR=new THREE.Mesh(new THREE.SphereGeometry(.10,10,8),skinMatR); handR.position.y=-.37; elbowR.add(handR);
+
+    const hipL=new THREE.Group(); hipL.position.set(-.17,-.10,0); pelvis.add(hipL);
+    const hipR=new THREE.Group(); hipR.position.set(.17,-.10,0); pelvis.add(hipR);
+    const thighL=capsule(.125,.40,clothMat); thighL.position.y=-.22; hipL.add(thighL);
+    const thighR=capsule(.125,.40,clothMat); thighR.position.y=-.22; hipR.add(thighR);
+    const kneeL=new THREE.Group(); kneeL.position.y=-.43; hipL.add(kneeL);
+    const kneeR=new THREE.Group(); kneeR.position.y=-.43; hipR.add(kneeR);
+    const shinL=capsule(.095,.38,clothMat); shinL.position.y=-.20; kneeL.add(shinL);
+    const shinR=capsule(.095,.38,clothMat); shinR.position.y=-.20; kneeR.add(shinR);
+    const bootL=box(.20,.12,.34,bootMat); bootL.position.set(0,-.42,-.06); kneeL.add(bootL);
+    const bootR=box(.20,.12,.34,bootMat); bootR.position.set(0,-.42,-.06); kneeR.add(bootR);
+
+    const vestFront=box(.40,.34,.035,metalMat); vestFront.position.set(0,.08,-.205); spine.add(vestFront);
+    const gun=new THREE.Group(); gun.position.set(.40,.03,-.28); gun.rotation.x=-.04; spine.add(gun);
+    const gunBody=box(.12,.12,.55,metalMat); gunBody.position.z=-.28; gun.add(gunBody);
+    const barrel=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,.30,10),metalMat); barrel.rotation.x=Math.PI/2; barrel.position.z=-.68; gun.add(barrel);
+
+    pelvis.add(spine); root.add(pelvis);
 
     const nameTag=document.createElement("div");
     nameTag.className="remoteName";
     nameTag.textContent=String(data.name||"Player").slice(0,16);
     document.body.appendChild(nameTag);
 
-    // Separate hit zones: Kopf / Körper / Arme / Beine.
+    // Separate hit zones, parented to articulated joints.
     const zones={};
     const zoneMat=new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false});
-    zones.head=new THREE.Mesh(new THREE.SphereGeometry(.27,10,8),zoneMat);
-    zones.head.position.y=1.72;
-    zones.chest=new THREE.Mesh(new THREE.BoxGeometry(.58,.85,.42),zoneMat);
-    zones.chest.position.y=1.05;
-    zones.leftArm=new THREE.Mesh(new THREE.CapsuleGeometry(.10,.48,4,6),zoneMat);
-    zones.leftArm.position.set(-.43,1.12,0);
-    zones.rightArm=new THREE.Mesh(new THREE.CapsuleGeometry(.10,.48,4,6),zoneMat);
-    zones.rightArm.position.set(.43,1.12,0);
-    zones.leftLeg=new THREE.Mesh(new THREE.CapsuleGeometry(.11,.52,4,6),zoneMat);
-    zones.leftLeg.position.set(-.16,.43,0);
-    zones.rightLeg=new THREE.Mesh(new THREE.CapsuleGeometry(.11,.52,4,6),zoneMat);
-    zones.rightLeg.position.set(.16,.43,0);
-    Object.values(zones).forEach(z=>{z.userData.hitZone=true;root.add(z);});
+    zones.head=new THREE.Mesh(new THREE.SphereGeometry(.27,10,8),zoneMat); zones.head.position.y=.14; neck.add(zones.head);
+    zones.chest=new THREE.Mesh(new THREE.BoxGeometry(.58,.72,.46),zoneMat); zones.chest.position.y=.04; spine.add(zones.chest);
+    zones.leftArm=new THREE.Mesh(new THREE.CapsuleGeometry(.115,.62,4,6),zoneMat); zones.leftArm.position.set(0,-.18,0); elbowL.add(zones.leftArm);
+    zones.rightArm=new THREE.Mesh(new THREE.CapsuleGeometry(.115,.62,4,6),zoneMat); zones.rightArm.position.set(0,-.18,0); elbowR.add(zones.rightArm);
+    zones.leftLeg=new THREE.Mesh(new THREE.CapsuleGeometry(.13,.78,4,6),zoneMat); zones.leftLeg.position.set(0,-.20,0); hipL.add(zones.leftLeg);
+    zones.rightLeg=new THREE.Mesh(new THREE.CapsuleGeometry(.13,.78,4,6),zoneMat); zones.rightLeg.position.set(0,-.20,0); hipR.add(zones.rightLeg);
+    Object.entries(zones).forEach(([name,z])=>{z.userData.hitZone=true;z.userData.zoneName=name;});
 
-    root.add(body,head,gun);
-    root.userData.body=body;
-    root.userData.head=head;
+    root.userData.bodyParts={pelvis,spine,shoulderL,shoulderR,elbowL,elbowR,hipL,hipR,kneeL,kneeR,gun};
     root.userData.zones=zones;
     root.userData.nameTag=nameTag;
     root.userData.lastData=data;
-
+    root.userData.walkPhase=Math.random()*Math.PI*2;
+    root.userData.lastAnimPos=new THREE.Vector3(Number(data.x)||0,Number(data.y)||0,Number(data.z)||0);
+    root.userData.targetPosition=new THREE.Vector3(Number(data.x)||0,Number(data.y)||0,Number(data.z)||0);
+    root.add(new THREE.Object3D());
     scene.add(root);
     return root;
 }
-
 function addRemotePlayer(uid,data){
     if(uid===myFirebaseUid) return;
     if(remotePlayers.has(uid)) return;
@@ -1409,30 +1440,34 @@ function addRemotePlayer(uid,data){
 function updateRemotePlayer(uid,data){
     if(uid===myFirebaseUid) return;
     let root=remotePlayers.get(uid);
-    if(!root){
-        addRemotePlayer(uid,data);
-        root=remotePlayers.get(uid);
-        if(!root) return;
-    }
+    if(!root){ addRemotePlayer(uid,data); root=remotePlayers.get(uid); if(!root)return; }
     root.userData.lastData=data||{};
     if(root.userData.nameTag) root.userData.nameTag.textContent=String(data.name||"Player").slice(0,16);
-    const target = new THREE.Vector3(
-        Number(data.x)||0,
-        Number(data.y)||0,
-        Number(data.z)||0
-    );
-    if(!root.userData.initialized){
-        root.position.copy(target);
-        root.rotation.y=Number(data.yaw)||0;
-        root.userData.initialized=true;
-    }
-    // Nur das Ziel setzen. Die Darstellung wird weich interpoliert.
-    root.userData.targetPosition = target;
-    root.userData.health=Number(data.health ?? 100);
-    root.userData.targetYaw = Number(data.yaw)||0;
-    root.userData.lastNetworkTime = performance.now();
-}
 
+    const hp=Number(data.health ?? 100);
+    if(hp<=0){
+        if(!root.userData.dead){
+            root.userData.dead=true;
+            const deadPos=root.position.clone();
+            root.visible=false;
+            createRagdoll(deadPos);
+        }
+        root.userData.health=0;
+        return;
+    }
+    if(root.userData.dead){
+        root.userData.dead=false;
+        root.visible=true;
+        root.userData.initialized=false;
+    }
+
+    const target=new THREE.Vector3(Number(data.x)||0,Number(data.y)||0,Number(data.z)||0);
+    if(!root.userData.initialized){ root.position.copy(target); root.rotation.y=Number(data.yaw)||0; root.userData.initialized=true; root.userData.lastAnimPos.copy(target); }
+    root.userData.targetPosition=target;
+    root.userData.health=hp;
+    root.userData.targetYaw=Number(data.yaw)||0;
+    root.userData.lastNetworkTime=performance.now();
+}
 function removeRemotePlayer(uid){
     const root=remotePlayers.get(uid);
     if(!root) return;
@@ -1450,17 +1485,36 @@ function removeRemotePlayer(uid){
 
 
 function updateRemoteInterpolation(dt){
-    const smooth = 1 - Math.exp(-dt * 18);
+    const smooth=1-Math.exp(-dt*18);
     for(const root of remotePlayers.values()){
-        const target = root.userData.targetPosition;
-        if(!target) continue;
-        root.position.lerp(target, smooth);
-        let targetYaw = Number(root.userData.targetYaw||0);
-        let diff = ((targetYaw-root.rotation.y+Math.PI)%(Math.PI*2))-Math.PI;
-        root.rotation.y += diff * smooth;
+        if(root.userData.dead||!root.visible)continue;
+        const target=root.userData.targetPosition; if(!target)continue;
+        const before=root.position.clone();
+        root.position.lerp(target,smooth);
+        let targetYaw=Number(root.userData.targetYaw||0);
+        let diff=((targetYaw-root.rotation.y+Math.PI)%(Math.PI*2))-Math.PI;
+        root.rotation.y+=diff*smooth;
+
+        const speed=before.distanceTo(root.position)/Math.max(dt,.001);
+        const moving=speed>1.2;
+        const p=root.userData.bodyParts;
+        if(p){
+            root.userData.walkPhase+=(moving?dt*(speed>7?11:7):0);
+            const phase=root.userData.walkPhase;
+            const amp=moving?(speed>7?.62:.42):0;
+            const swing=Math.sin(phase)*amp;
+            const swingOpp=Math.sin(phase+Math.PI)*amp;
+            p.hipL.rotation.x=swing; p.hipR.rotation.x=swingOpp;
+            p.kneeL.rotation.x=Math.max(0,-swing)*.65; p.kneeR.rotation.x=Math.max(0,-swingOpp)*.65;
+            p.shoulderL.rotation.x=swingOpp*.75; p.shoulderR.rotation.x=swing*.75;
+            p.elbowL.rotation.x=moving?.18:0; p.elbowR.rotation.x=moving?.18:0;
+            p.spine.rotation.z=moving?Math.sin(phase*2)*.035:0;
+            p.pelvis.rotation.y=moving?Math.sin(phase)*.025:0;
+            p.gun.rotation.x=-.04+(moving?Math.abs(Math.sin(phase))*-.035:0);
+        }
+        root.userData.lastAnimPos.copy(root.position);
     }
 }
-
 function getPlayerState(){
     return {
         x:Number(camera.position.x.toFixed(3)),
@@ -1740,8 +1794,10 @@ addEventListener("keydown",e=>{
 
     keys[e.code]=true;
 
-    if(e.code==="KeyR")
+    if(e.code==="KeyR"){
+        if(gameOver){ respawnPlayer(); return; }
         reload();
+    }
 
     if(
         e.code==="Space" &&
@@ -2163,6 +2219,8 @@ let currentWeapon=2;
 let fireCooldown=0;
 let reloading=false;
 let scoped=false;
+let reloadTimer=0;
+let reloadDuration=0;
 
 
 /* ============================================================
@@ -2406,6 +2464,16 @@ function createGunModel(type){
     }
     function box(x,y,z,px,py,pz,mat=dark,rot){return part(new THREE.BoxGeometry(x,y,z),mat,[px,py,pz],rot)}
     function cyl(r1,r2,len,px,py,pz,mat=black){return part(new THREE.CylinderGeometry(r1,r2,len,18),mat,[px,py,pz],[Math.PI/2,0,0])}
+    function screw(px,py,pz){
+        const s=part(new THREE.CylinderGeometry(.018,.018,.012,12),steel,[px,py,pz],[Math.PI/2,0,0]); return s;
+    }
+    function rail(px,py,pz,len){
+        return box(.08,.035,len,px,py,pz,steel);
+    }
+
+    // Fine mechanical details shared by every new weapon body.
+    rail(0,.23,-.10,.72);
+    screw(-.13,.15,.16); screw(.13,.15,.16);
 
     if(type===0){
         // VECTOR X — compact futuristic SMG
@@ -2420,6 +2488,8 @@ function createGunModel(type){
         box(.08,.05,.18,0,.28,.28,accent);
         cyl(.055,.07,.48,0,0,-.67,black);
         cyl(.075,.075,.09,0,0,-.91,steel);
+        box(.055,.12,.16,0,.05,.22,steel);
+        box(.08,.06,.18,0,.08,.52,black);
         muzzle=new THREE.Object3D();muzzle.position.set(0,0,-.96);currentGun.add(muzzle);
     }else if(type===1){
         // BREACHER — heavy detailed shotgun
@@ -2434,6 +2504,8 @@ function createGunModel(type){
         box(.11,.04,.48,0,.27,-.42,accent);
         part(new THREE.TorusGeometry(.13,.018,8,18),steel,[0,.17,-.02],[Math.PI/2,0,0]);
         box(.05,.12,.06,0,.19,-.09,edge,[-.3,0,0]);
+        box(.08,.10,.22,0,.08,.62,steel);
+        box(.12,.035,.24,0,.22,.52,edge);
         muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.03);currentGun.add(muzzle);
     }else if(type===2){
         // VANGUARD AR — modern rifle with handguard, vents, optic and stock
@@ -2451,6 +2523,8 @@ function createGunModel(type){
         box(.09,.12,.24,0,.29,-.10,black);
         box(.13,.11,.34,0,.32,-.19,black);
         box(.08,.06,.20,0,.39,-.19,accent);
+        box(.10,.06,.40,0,.26,.20,edge);
+        for(const x of [-.14,.14]) screw(x,.16,.42);
         muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.24);currentGun.add(muzzle);
     }else{
         // LONGSHOT — precision rifle
@@ -2469,6 +2543,8 @@ function createGunModel(type){
         const lens=new THREE.MeshStandardMaterial({color:0x183c45,metalness:.65,roughness:.15});
         cyl(.082,.082,.015,0,.34,-.655,lens);
         box(.12,.055,.50,0,.47,-.20,black);
+        box(.12,.05,.52,0,.48,-.20,steel);
+        box(.08,.06,.18,0,.56,-.20,edge);
         muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.55);currentGun.add(muzzle);
     }
 }
@@ -2655,6 +2731,8 @@ function reload(){
         return;
 
     reloading=true;
+    reloadDuration=w.reload;
+    reloadTimer=w.reload;
 
     document.getElementById(
         "reload"
@@ -2673,6 +2751,8 @@ function reload(){
         w.reserve-=amount;
 
         reloading=false;
+        reloadTimer=0;
+        reloadDuration=0;
 
         document.getElementById(
             "reload"
@@ -3622,6 +3702,15 @@ function animateWeapon(dt){
     weaponBobX += (weaponTargetX - weaponBobX) * bobSmooth;
     weaponBobY += (weaponTargetY - weaponBobY) * bobSmooth;
 
+    /* Mechanische Reload-Animation: Waffe kippt kontrolliert nach unten und zurück. */
+    if(reloading && reloadDuration>0){
+        const progress=1-(reloadTimer/reloadDuration);
+        const phase=Math.sin(progress*Math.PI);
+        weaponGroup.position.y-=phase*.075;
+        weaponGroup.rotation.x+=phase*.18;
+        weaponGroup.rotation.z+=Math.sin(progress*Math.PI*2)*.055;
+    }
+
     /* Recoil-Feder: schnell zum Ausgangspunkt zurück, ohne Zittern */
     weaponRecoilRot *= Math.exp(-dt * 13);
     weaponRecoilZ *= Math.exp(-dt * 16);
@@ -4005,170 +4094,38 @@ function damagePlayer(amount){
 }
 
 
+function respawnPlayer(){
+    const spawnPoints=[
+        new THREE.Vector3(-118,0,-118),new THREE.Vector3(118,0,-118),
+        new THREE.Vector3(-118,0,118),new THREE.Vector3(118,0,118),
+        new THREE.Vector3(-55,0,35),new THREE.Vector3(52,0,-28),
+        new THREE.Vector3(0,0,0)
+    ];
+    const spawn=spawnPoints[Math.floor(Math.random()*spawnPoints.length)].clone();
+    camera.position.set(spawn.x,player.height,spawn.z);
+    yaw=Math.random()*Math.PI*2; pitch=0; camera.rotation.set(pitch,yaw,0,"YXZ");
+    player.velocity.set(0,0,0); player.grounded=true; health=100;
+    weapons.forEach(w=>{w.ammo=w.mag;});
+    grenadeCount=3; flashCount=2; molotovCount=2; reloading=false; reloadTimer=0; reloadDuration=0;
+    scoped=false; document.getElementById("scope").style.display="none"; camera.fov=75; camera.updateProjectionMatrix();
+    updateAmmo(); updateThrowableUI(); document.getElementById("health").style.width="100%";
+    gameOver=false; locked=true; weaponGroup.visible=true;
+    const ov=document.getElementById("deathOverlay"); if(ov)ov.style.display="none";
+    showStatus("RESPAWN — STARTPOSITION");
+    sendPlayerState(true);
+}
+
 function playerDeath(){
-
-    if(gameOver) return;
-
-    gameOver=true;
-    locked=false;
-    mouseDown=false;
-
-    deaths++;
-    if(multiplayerReady && multiplayer.myRef){
+    if(gameOver)return;
+    gameOver=true; locked=false; mouseDown=false; deaths++;
+    if(multiplayerReady&&multiplayer.myRef){
         update(multiplayer.myRef,{health:0,deaths:deaths,deathSeq:Date.now(),ts:Date.now()}).catch(()=>{});
     }
-    updateScoreboard();
-
-    showStatus("AUSGESCHALTET — RESPAWN...");
-    weaponGroup.visible=false;
-
-    // Kurzer lokaler Ragdoll-Effekt. Danach wird automatisch respawnt.
+    updateScoreboard(); weaponGroup.visible=false;
     createRagdoll(camera.position.clone());
-
-    setTimeout(()=>{
-        const spawnPoints=[
-            new THREE.Vector3(-110,0,-110),
-            new THREE.Vector3(110,0,-110),
-            new THREE.Vector3(-110,0,110),
-            new THREE.Vector3(110,0,110),
-            new THREE.Vector3(0,0,0)
-        ];
-        const spawn=spawnPoints[Math.floor(Math.random()*spawnPoints.length)].clone();
-        camera.position.set(spawn.x,player.height,spawn.z);
-        yaw=Math.random()*Math.PI*2;
-        pitch=0;
-        camera.rotation.set(pitch,yaw,0,"YXZ");
-        player.velocity.set(0,0,0);
-        player.grounded=true;
-        health=100;
-        weapons.forEach(w=>{w.ammo=w.mag;});
-        grenadeCount=3;
-        flashCount=2;
-        molotovCount=2;
-        reloading=false;
-        scoped=false;
-        document.getElementById("scope").style.display="none";
-        camera.fov=75;
-        camera.updateProjectionMatrix();
-        updateAmmo();
-        updateThrowableUI();
-        document.getElementById("health").style.width="100%";
-        gameOver=false;
-        weaponGroup.visible=true;
-        showStatus("RESPAWN — WEITER!");
-        sendPlayerState(true);
-    },1800);
+    const ov=document.getElementById("deathOverlay"); if(ov)ov.style.display="flex";
+    showStatus("");
 }
-
-/* ============================================================
-   STATUS
-============================================================ */
-
-function showStatus(text){
-
-    const el=document.getElementById(
-        "status"
-    );
-
-    el.textContent=text;
-    el.style.display="block";
-
-    setTimeout(()=>{
-        el.style.display="none";
-    },900);
-}
-
-
-/* ============================================================
-   ZONE SYSTEM
-============================================================ */
-
-function updateZone(){
-
-    const x=camera.position.x;
-    const z=camera.position.z;
-
-    let name="CENTRAL ARENA";
-
-    if(x<-60)
-        name="CONTAINER HAVEN — WEST";
-
-    else if(x>60)
-        name="CONTAINER HAVEN — EAST";
-
-    else if(z<-65)
-        name="WAREHOUSE DISTRICT — NORTH";
-
-    else if(z>65)
-        name="WAREHOUSE DISTRICT — SOUTH";
-
-    else if(
-        Math.abs(x)>35||
-        Math.abs(z)>35
-    )
-        name="INDUSTRIAL YARD";
-
-    document.getElementById(
-        "zone"
-    ).textContent=name;
-}
-
-
-/* ============================================================
-   START
-============================================================ */
-
-renderer.domElement.addEventListener("click",()=>{
-    if(!strikeMode && !locked && !gameOver && renderer.domElement.requestPointerLock){
-        renderer.domElement.requestPointerLock();
-    }
-});
-
-document.getElementById(
-    "startButton"
-).onclick=()=>{
-
-    const input=document.getElementById("usernameInput");
-    playerName=(input?.value||"Player").trim().replace(/[^a-zA-Z0-9_ÄÖÜäöüß -]/g,"").slice(0,16)||"Player";
-    // Namen und aktuellen Zustand sofort an die globale Lobby senden.
-    sendPlayerState(true);
-
-    if(gameOver){
-
-        location.reload();
-
-        return;
-    }
-
-    if (renderer.domElement.requestPointerLock) {
-        renderer.domElement.requestPointerLock();
-    } else {
-        document.getElementById("start").style.display="none";
-        locked=true;
-        weaponGroup.visible=true;
-    }
-};
-
-
-document.addEventListener(
-    "pointerlockchange",
-    ()=>{
-
-        locked=
-            document.pointerLockElement===
-            renderer.domElement;
-
-        if(locked){
-
-            document.getElementById(
-                "start"
-            ).style.display="none";
-
-            weaponGroup.visible=true;
-        }
-    }
-);
-
 
 /* ============================================================
    MINIMAP + AIRSTRIKE TARGETING
@@ -4249,18 +4206,60 @@ function openStrikeMap(){
 function closeStrikeMap(){strikeMode=false;strikeOverlay.style.display="none";}
 function launchAirstrike(){
     if(strikeSpots.length!==4)return;
-    for(const spot of strikeSpots) airstrikeEffect(new THREE.Vector3(spot.x,0.02,spot.z));
+    const spots=strikeSpots.map(p=>new THREE.Vector3(p.x,.02,p.z)).sort((a,b)=>a.x-b.x);
     closeStrikeMap();
+    showStatus("AIRSTRIKE INCOMING");
+    setTimeout(()=>createAirstrikePlane(spots),1000);
 }
 strikeCanvas.addEventListener("click",e=>{
     if(!strikeMode||strikeSpots.length>=4)return;
     const r=strikeCanvas.getBoundingClientRect();
     const x=(e.clientX-r.left)/r.width*720, y=(e.clientY-r.top)/r.height*720;
-    const p=mapToWorld(x,y,720);
-    strikeSpots.push(p);drawMap(strikeCtx,720);
+    const p=mapToWorld(x,y,720); strikeSpots.push(p); drawMap(strikeCtx,720);
     if(strikeSpots.length===4)strikeConfirm.style.display="block";
 });
 strikeConfirm.addEventListener("click",launchAirstrike);
+function createAirstrikePlane(spots){
+    const plane=new THREE.Group();
+    const bodyMat=new THREE.MeshStandardMaterial({color:0x4d5559,metalness:.8,roughness:.3});
+    const darkMat=new THREE.MeshStandardMaterial({color:0x171a1c,metalness:.5,roughness:.5});
+    const body=new THREE.Mesh(new THREE.CylinderGeometry(.34,.48,4.2,12),bodyMat); body.rotation.z=Math.PI/2; plane.add(body);
+    const nose=new THREE.Mesh(new THREE.ConeGeometry(.48,1.0,12),bodyMat); nose.rotation.z=-Math.PI/2; nose.position.x=2.45; plane.add(nose);
+    const wing=new THREE.Mesh(new THREE.BoxGeometry(.28,5.8,.48),darkMat); wing.position.x=-.15; plane.add(wing);
+    const tail=new THREE.Mesh(new THREE.BoxGeometry(.25,1.7,.65),darkMat); tail.position.x=-1.7; plane.add(tail);
+    const engine1=new THREE.Mesh(new THREE.CylinderGeometry(.16,.16,.45,10),darkMat); engine1.rotation.z=Math.PI/2; engine1.position.set(.3,1.05,0); plane.add(engine1);
+    const engine2=engine1.clone(); engine2.position.y=-1.05; plane.add(engine2);
+    const start=spots[0].clone(); const end=spots[spots.length-1].clone();
+    const dir=end.clone().sub(start); dir.y=0; if(dir.lengthSq()<.01)dir.set(1,0,0); dir.normalize();
+    const side=new THREE.Vector3(-dir.z,0,dir.x);
+    plane.position.copy(start).addScaledVector(dir,-10); plane.position.y=28;
+    plane.rotation.y=Math.atan2(-dir.z,-dir.x);
+    scene.add(plane);
+    const duration=2.8, t0=performance.now();
+    const rocketTimes=spots.map((_,i)=>.55+i*.34);
+    const fired=new Array(spots.length).fill(false);
+    function tick(){
+        const t=(performance.now()-t0)/1000; const u=Math.min(1,t/duration);
+        plane.position.copy(start).addScaledVector(dir,(u*40)-10); plane.position.y=28+Math.sin(u*Math.PI)*1.2;
+        for(let i=0;i<spots.length;i++) if(!fired[i]&&t>=rocketTimes[i]){fired[i]=true;launchRocket(spots[i],dir);}
+        if(u<1)requestAnimationFrame(tick); else {scene.remove(plane); showStatus("");}
+    }
+    tick();
+}
+function launchRocket(target,dir){
+    const rocket=new THREE.Group();
+    const bodyMat=new THREE.MeshStandardMaterial({color:0x343a3d,metalness:.8,roughness:.3});
+    const noseMat=new THREE.MeshStandardMaterial({color:0x1a1d1f,metalness:.7,roughness:.35});
+    const body=new THREE.Mesh(new THREE.CylinderGeometry(.075,.075,.62,10),bodyMat); rocket.add(body);
+    const nose=new THREE.Mesh(new THREE.ConeGeometry(.075,.16,10),noseMat); nose.position.y=-.39; rocket.add(nose);
+    const flame=new THREE.Mesh(new THREE.ConeGeometry(.055,.28,8),new THREE.MeshBasicMaterial({color:0xffa32d,transparent:true,opacity:.9})); flame.position.y=.44; rocket.add(flame);
+    rocket.position.set(target.x,27,target.z); scene.add(rocket);
+    const start=rocket.position.clone(), end=target.clone(); const t0=performance.now();
+    function tick(){
+        const t=Math.min(1,(performance.now()-t0)/700); rocket.position.lerpVectors(start,end,t); rocket.rotation.x=Math.PI/2;
+        if(t<1){requestAnimationFrame(tick);}else{scene.remove(rocket); airstrikeEffect(target);}}
+    tick();
+}
 function airstrikeEffect(pos){
     const group=new THREE.Group();group.position.copy(pos);
     const ring=new THREE.Mesh(new THREE.RingGeometry(1.8,2.1,32),new THREE.MeshBasicMaterial({color:0xffb12b,transparent:true,opacity:.9,side:THREE.DoubleSide}));
@@ -4273,12 +4272,7 @@ function airstrikeEffect(pos){
         s.position.set((Math.random()-.5)*2,.2+Math.random()*1,(Math.random()-.5)*2);s.userData.v=new THREE.Vector3((Math.random()-.5)*5,3+Math.random()*6,(Math.random()-.5)*5);group.add(s);sparks.push(s);
     }
     const started=performance.now();
-    const tick=()=>{
-        const t=(performance.now()-started)/1000;
-        group.scale.setScalar(1+t*2.2);ring.material.opacity=Math.max(0,1-t/1.2);beam.material.opacity=Math.max(0,.34-t*.3);
-        for(const s of sparks){s.position.addScaledVector(s.userData.v,.016);s.userData.v.y-=10*.016;}
-        if(t<1.25)requestAnimationFrame(tick);else scene.remove(group);
-    };tick();
+    const tick=()=>{const t=(performance.now()-started)/1000;group.scale.setScalar(1+t*2.2);ring.material.opacity=Math.max(0,1-t/1.2);beam.material.opacity=Math.max(0,.34-t*.3);for(const s of sparks){s.position.addScaledVector(s.userData.v,.016);s.userData.v.y-=10*.016;}if(t<1.25)requestAnimationFrame(tick);else scene.remove(group);};tick();
     const dist=camera.position.distanceTo(pos);if(dist<7)damagePlayer(Math.round(90*(1-dist/7)));
 }
 
@@ -4400,6 +4394,8 @@ function animate(){
     last=now;
 
 
+    if(reloadTimer>0) reloadTimer=Math.max(0,reloadTimer-dt);
+
     if(fireCooldown>0){
 
         fireCooldown=
@@ -4463,6 +4459,7 @@ function animate(){
 
 updateAmmo();
 updateThrowableUI();
+const deathOverlayInit=document.getElementById("deathOverlay"); if(deathOverlayInit) deathOverlayInit.style.display="none";
 updateAccuracyUI();
 
 animate();
