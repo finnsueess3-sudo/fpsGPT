@@ -264,7 +264,7 @@ button{
     <p>Maus — Zielen</p>
     <p>Linksklick — Schießen</p>
     <p>R — Nachladen</p>
-    <p>1–5 — Waffen wechseln</p>
+    <p>1–8 — Waffen wechseln</p>
     <p>Rechtsklick — Sniper Scope</p>
     <p>Q — Granate auswählen · E — Flash · C — Molotov · X — Airstrike</p>
     <button id="startButton">START</button>
@@ -290,9 +290,9 @@ button{
 <div id="ammo">30 / 120</div>
 
 <div id="grenades">
-Q Grenade: 3<br>
-E Flash: 2<br>
-C Molotov: 2
+Q Grenade: ∞<br>
+E Flash: ∞<br>
+C Molotov: ∞
 </div>
 
 <div id="weaponSlots">
@@ -301,6 +301,9 @@ C Molotov: 2
     <div class="slot active">3</div>
     <div class="slot">4</div>
     <div class="slot">5</div>
+    <div class="slot">6</div>
+    <div class="slot">7</div>
+    <div class="slot">8</div>
 </div>
 
 <div id="reload">RELOADING</div>
@@ -2148,6 +2151,9 @@ addEventListener("keydown",e=>{
     if(e.code==="Digit3")selectWeapon(2);
     if(e.code==="Digit4")selectWeapon(3);
     if(e.code==="Digit5")selectWeapon(4);
+    if(e.code==="Digit6")selectWeapon(5);
+    if(e.code==="Digit7")selectWeapon(6);
+    if(e.code==="Digit8")selectWeapon(7);
     
 
     if(e.code==="KeyQ"){
@@ -2527,12 +2533,14 @@ function updatePlayer(dt){
             );
     }
 
-    camera.fov=
-        THREE.MathUtils.lerp(
-            camera.fov,
-            sprinting?82:75,
-            dt*8
-        );
+    if(!scoped && !selectedThrowable){
+        camera.fov=
+            THREE.MathUtils.lerp(
+                camera.fov,
+                sprinting?82:75,
+                dt*8
+            );
+    }
 
     camera.updateProjectionMatrix();
 
@@ -2551,7 +2559,10 @@ const weapons=[
     {name:"BREACHER",mag:10,ammo:10,reserve:50,damage:82,speed:185,cooldown:.62,spread:.035,automatic:false,scope:false,recoil:.045,reload:1150},
     {name:"VANGUARD AR",mag:30,ammo:30,reserve:120,damage:44,speed:260,cooldown:.105,spread:.010,automatic:true,scope:false,recoil:.017,reload:900},
     {name:"LONGSHOT",mag:5,ammo:5,reserve:25,damage:125,speed:360,cooldown:1.0,spread:.0012,automatic:false,scope:true,recoil:.018,reload:1300},
-    {name:"THUNDER SHOTGUN",mag:8,ammo:8,reserve:48,damage:22,speed:190,cooldown:.78,spread:.085,automatic:false,scope:false,recoil:.060,reload:1250,pellets:10}
+    {name:"THUNDER SHOTGUN",mag:8,ammo:8,reserve:48,damage:22,speed:190,cooldown:.78,spread:.085,automatic:false,scope:false,recoil:.060,reload:1250,pellets:10},
+    {name:"SPECTRE SMG",mag:36,ammo:36,reserve:180,damage:26,speed:310,cooldown:.055,spread:.026,automatic:true,scope:false,recoil:.012,reload:800},
+    {name:"RAVEN DMR",mag:12,ammo:12,reserve:72,damage:78,speed:390,cooldown:.48,spread:.006,automatic:false,scope:false,recoil:.032,reload:1050},
+    {name:"RAIL CANNON",mag:4,ammo:4,reserve:24,damage:180,speed:520,cooldown:1.35,spread:.0005,automatic:false,scope:true,recoil:.070,reload:1500}
 ];
 
 let currentWeapon=2;
@@ -2890,8 +2901,8 @@ function createGunModel(type){
         box(.12,.05,.52,0,.48,-.20,steel);
         box(.08,.06,.18,0,.56,-.20,edge);
         muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.55);currentGun.add(muzzle);
-    }else{
-        // THUNDER SHOTGUN — 5-Pellet-Pumpgun
+    }else if(type===4){
+        // THUNDER SHOTGUN — 10-Pellet-Pumpgun
         box(.42,.34,1.00,0,0,.02,dark);
         box(.45,.06,.72,0,.19,-.12,steel);
         box(.25,.48,.25,0,.31,.26,wood,[-.18,0,0]);
@@ -2903,6 +2914,54 @@ function createGunModel(type){
         box(.11,.055,.42,0,.29,.08,black);
         for(let i=0;i<3;i++) box(.035,.045,.12,-.11+i*.11,.24,-.53,steel);
         muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.19);currentGun.add(muzzle);
+    }else if(type===5){
+        // SPECTRE SMG — compact high-rate SMG
+        box(.36,.28,.92,0,0,.02,dark);
+        box(.40,.05,.62,0,.18,-.16,steel);
+        box(.22,.46,.22,0,.31,.22,rubber,[-.22,0,0]);
+        box(.18,.25,.34,0,-.17,-.28,rubber,[.25,0,0]);
+        cyl(.058,.072,.68,0,.01,-.62,black);
+        cyl(.085,.085,.09,0,.01,-.98,accent);
+        for(let i=0;i<6;i++) box(.035,.045,.075,-.13+i*.052,.235,-.43+i*.08,edge);
+        box(.12,.08,.30,0,.30,.05,black);
+        box(.08,.05,.26,0,.37,.03,accent);
+        box(.10,.10,.22,0,.06,.42,steel);
+        muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.03);currentGun.add(muzzle);
+    }else if(type===6){
+        // RAVEN DMR — marksman rifle
+        box(.42,.30,1.16,0,0,.03,dark);
+        box(.45,.045,.82,0,.18,-.14,edge);
+        box(.20,.50,.24,0,.31,.23,rubber,[-.20,0,0]);
+        box(.22,.18,.62,0,.03,.67,rubber,[.02,0,0]);
+        box(.28,.07,.12,0,-.04,.99,steel);
+        cyl(.068,.08,.98,0,.02,-.72,black);
+        cyl(.095,.095,.10,0,.02,-1.22,steel);
+        // low optic
+        cyl(.075,.075,.48,0,.31,-.02,black);
+        cyl(.10,.10,.055,0,.31,-.25,accent);
+        cyl(.10,.10,.055,0,.31,.21,accent);
+        box(.08,.05,.18,0,.42,-.02,edge);
+        box(.10,.055,.34,0,.26,.30,black);
+        muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.27);currentGun.add(muzzle);
+    }else{
+        // RAIL CANNON — futuristic precision energy rifle
+        box(.46,.34,1.28,0,0,.02,dark);
+        box(.50,.055,.94,0,.20,-.18,steel);
+        box(.30,.06,.82,0,.25,-.22,accent);
+        box(.22,.48,.24,0,.32,.28,rubber,[-.16,0,0]);
+        box(.25,.20,.58,0,.02,.70,rubber,[.02,0,0]);
+        box(.31,.07,.13,0,-.06,1.01,steel);
+        for(let i=0;i<4;i++) box(.045,.07,.14,-.12+i*.08,.31,-.53+i*.12,edge);
+        // magnetic rails
+        for(let x of [-.095,.095]) box(.035,.06,1.00,x,.13,-.60,black);
+        // optic
+        cyl(.085,.085,.62,0,.38,-.04,black);
+        cyl(.11,.11,.055,0,.38,-.34,accent);
+        cyl(.11,.11,.055,0,.38,.26,accent);
+        box(.10,.05,.20,0,.49,-.04,edge);
+        // energy chamber
+        part(new THREE.TorusGeometry(.12,.025,10,20),accent,[0,.03,-.42],[Math.PI/2,0,0]);
+        muzzle=new THREE.Object3D();muzzle.position.set(0,0,-1.47);currentGun.add(muzzle);
     }
 }
 
@@ -3239,9 +3298,9 @@ function shoot(){
 const projectiles=[];
 let selectedThrowable=null;
 
-let grenadeCount=3;
-let flashCount=2;
-let molotovCount=2;
+let grenadeCount=Infinity;
+let flashCount=Infinity;
+let molotovCount=Infinity;
 
 function createThrowable(type,speedMultiplier=1,offsetX=0){
 
@@ -3343,10 +3402,7 @@ function throwTwoSelectedThrowable(speedMultiplier){
     if(!selectedThrowable||gameOver) return;
     let count=selectedThrowable==="grenade"?grenadeCount:(selectedThrowable==="flash"?flashCount:molotovCount);
     if(count<=0) return;
-    const amount=Math.min(2,count);
-    if(selectedThrowable==="grenade") grenadeCount-=amount;
-    else if(selectedThrowable==="flash") flashCount-=amount;
-    else molotovCount-=amount;
+    const amount=2;
     for(let i=0;i<amount;i++) createThrowable(selectedThrowable,speedMultiplier,i===0?-.12:.12);
     updateThrowableUI(); clearThrowableSelection();
 }
@@ -3355,24 +3411,14 @@ function throwGrenade(){ selectThrowable("grenade"); }
 
 function throwFlash(){
 
-    if(flashCount<=0||gameOver)
-        return;
-
-    flashCount--;
-
-    updateThrowableUI();
+    if(gameOver) return;
 
     createThrowable("flash");
 }
 
 function throwMolotov(){
 
-    if(molotovCount<=0||gameOver)
-        return;
-
-    molotovCount--;
-
-    updateThrowableUI();
+    if(gameOver) return;
 
     createThrowable("molotov");
 }
@@ -3382,12 +3428,9 @@ function updateThrowableUI(){
     document.getElementById(
         "grenades"
     ).innerHTML=
-        "Q Grenade: "+
-        grenadeCount+
-        "<br>E Flash: "+
-        flashCount+
-        "<br>C Molotov: "+
-        molotovCount;
+        "Q Grenade: ∞"+
+        "<br>E Flash: ∞"+
+        "<br>C Molotov: ∞";
 }
 
 
@@ -4408,7 +4451,7 @@ function respawnPlayer(){
     yaw=Math.random()*Math.PI*2; pitch=0; camera.rotation.set(pitch,yaw,0,"YXZ");
     player.velocity.set(0,0,0); player.grounded=true; health=100;
     weapons.forEach(w=>{w.ammo=w.mag;});
-    grenadeCount=3; flashCount=2; molotovCount=2; reloading=false; reloadTimer=0; reloadDuration=0;
+    grenadeCount=Infinity; flashCount=Infinity; molotovCount=Infinity; reloading=false; reloadTimer=0; reloadDuration=0;
     scoped=false; scopeLevel=0; document.getElementById("scope").style.display="none"; camera.fov=75; camera.updateProjectionMatrix();
     updateAmmo(); updateThrowableUI(); document.getElementById("health").style.width="100%";
     gameOver=false; locked=true; weaponGroup.visible=true;
