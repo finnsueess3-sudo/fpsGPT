@@ -2099,9 +2099,13 @@ addEventListener("keydown",e=>{
     if(e.code==="KeyC")
         throwMolotov();
 
-    if(e.code==="KeyX"){
+    // AIRSTRIKE: robust for German/Swiss QWERTZ keyboards and pointer-lock
+    if(e.code==="KeyX" || String(e.key||"").toLowerCase()==="x"){
+        e.preventDefault();
+        if(gameOver) return;
         if(strikeMode) closeStrikeMap();
         else openStrikeMap();
+        return;
     }
 });
 
@@ -4509,9 +4513,16 @@ function updateNameTags(){
 
 function openStrikeMap(){
     if(gameOver)return;
-    strikeMode=true;strikeSpots=[];strikeConfirm.style.display="none";strikeOverlay.style.display="flex";
+    strikeMode=true;
+    strikeSpots=[];
+    strikeConfirm.style.display="none";
+    strikeOverlay.style.display="flex";
+    strikeOverlay.style.visibility="visible";
+    strikeOverlay.style.opacity="1";
+    strikeOverlay.style.zIndex="9999";
     if(document.pointerLockElement)document.exitPointerLock();
     drawMap(strikeCtx,720);
+    showStatus("AIRSTRIKE — 4 ZIELE WÄHLEN");
 }
 function closeStrikeMap(){strikeMode=false;strikeOverlay.style.display="none";}
 function launchAirstrike(){
@@ -4529,7 +4540,11 @@ strikeCanvas.addEventListener("click",e=>{
     const p=mapToWorld(x,y,720); strikeSpots.push(p); drawMap(strikeCtx,720);
     if(strikeSpots.length===4)strikeConfirm.style.display="block";
 });
-strikeConfirm.addEventListener("click",launchAirstrike);
+strikeConfirm.addEventListener("click",e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    launchAirstrike();
+});
 function createAirstrikePlane(spots,networkOnly=false){
     const plane=new THREE.Group();
     const bodyMat=new THREE.MeshStandardMaterial({color:0x4d5559,metalness:.8,roughness:.3});
