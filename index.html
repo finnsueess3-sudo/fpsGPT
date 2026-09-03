@@ -304,7 +304,7 @@ C Molotov: 2
 <div id="status"></div>
 <div id="hitmarker"></div>
 <div id="bloodVignette"></div>
-<div id="online">🟢 ONLINE: 1</div>
+<div id="online">🟡 FIREBASE: VERBINDET...</div>
 <div id="scoreboard">KILLS: 0 &nbsp; DEATHS: 0</div>
 
 <script type="module">
@@ -1333,11 +1333,14 @@ let kills = 0;
 let deaths = 0;
 let lastProcessedDeath = {};
 let networkClock = 0;
+let firebaseLobbyStarted = false;
+let firebaseWriteOk = false;
 
 const multiplayer = {
     playersRef:null,
     shotsRef:null,
-    myRef:null
+    myRef:null,
+    connectedRef:null
 };
 
 function makeRemotePlayer(data){
@@ -1477,12 +1480,14 @@ function getPlayerState(){
 
 async function startFirebaseMultiplayer(){
     try{
+        const onlineEl=document.getElementById("online");
+        if(onlineEl) onlineEl.textContent="🟡 FIREBASE: LOGIN...";
         await signInAnonymously(firebaseAuth);
     }catch(err){
-        console.warn("Firebase Anonymous Login fehlgeschlagen:",err);
+        console.error("Firebase Anonymous Login fehlgeschlagen:",err);
         const onlineEl=document.getElementById("online");
-        if(onlineEl) onlineEl.textContent="🔴 FIREBASE OFFLINE";
-        showStatus("FIREBASE LOGIN FEHLT — ANONYMER LOGIN AKTIVIEREN");
+        if(onlineEl) onlineEl.textContent="🔴 FIREBASE LOGIN FEHLER";
+        showStatus("FIREBASE LOGIN FEHLER — ANONYMER LOGIN AKTIVIEREN");
     }
 }
 
@@ -1493,11 +1498,46 @@ onAuthStateChanged(firebaseAuth,user=>{
     multiplayer.playersRef=ref(firebaseDB,"players");
     multiplayer.shotsRef=ref(firebaseDB,"shots");
     multiplayer.myRef=ref(firebaseDB,"players/"+myFirebaseUid);
+    multiplayer.connectedRef=ref(firebaseDB,".info/connected");
     multiplayerReady=true;
 
-    const initial=getPlayerState();
-    set(multiplayer.myRef,initial).catch(console.error);
-    onDisconnect(multiplayer.myRef).remove().catch(console.error);
+    // Nur einmal Listener anlegen, auch wenn Firebase den Auth-State erneut meldet.
+    if(firebaseLobbyStarted) {
+        sendPlayerState(true);
+        return;
+    }
+    firebaseLobbyStarted=true;
+
+    onValue(multiplayer.connectedRef, snap=>{
+        const connected=snap.val()===true;
+        const onlineEl=document.getElementById("online");
+        if(connected){
+            if(onlineEl && firebaseWriteOk) onlineEl.textContent="🟢 ONLINE: wird synchronisiert...";
+            else if(onlineEl) onlineEl.textContent="🟢 FIREBASE: VERBUNDEN";
+            set(multiplayer.myRef,getPlayerState())
+                .then(()=>{
+                    firebaseWriteOk=true;
+                    if(onlineEl) onlineEl.textContent="🟢 ONLINE: aktiv";
+                })
+                .catch(err=>{
+                    firebaseWriteOk=false;
+                    console.error("Firebase /players WRITE FEHLER:",err);
+                    if(onlineEl) onlineEl.textContent="🔴 DATABASE WRITE FEHLER";
+                    showStatus("DATABASE RULES BLOCKIEREN /players");
+                });
+        }else{
+            firebaseWriteOk=false;
+            if(onlineEl) onlineEl.textContent="🔴 FIREBASE: GETRENNT";
+        }
+    }, err=>{
+        console.error("Firebase connection listener:",err);
+        const onlineEl=document.getElementById("online");
+        if(onlineEl) onlineEl.textContent="🔴 FIREBASE VERBINDUNGSFEHLER";
+    });
+
+    onDisconnect(multiplayer.myRef).remove().catch(err=>{
+        console.error("onDisconnect Fehler:",err);
+    });
 
     onChildAdded(multiplayer.playersRef,snap=>{
         if(snap.key!==myFirebaseUid) addRemotePlayer(snap.key,snap.val());
@@ -1529,7 +1569,7 @@ onAuthStateChanged(firebaseAuth,user=>{
         const all=snap.val()||{};
         const ids=new Set(Object.keys(all));
 
-        // Vollständiger Abgleich: jeder Client sieht garantiert dieselbe globale /players-Lobby.
+        // EIN globaler Raum: /players enthält alle verbundenen Spieler.
         for(const [uid,data] of Object.entries(all)){
             if(uid!==myFirebaseUid) updateRemotePlayer(uid,data||{});
         }
@@ -1540,6 +1580,12 @@ onAuthStateChanged(firebaseAuth,user=>{
         const count=Object.keys(all).length;
         const onlineEl=document.getElementById("online");
         if(onlineEl) onlineEl.textContent="🟢 ONLINE: "+count;
+        firebaseWriteOk = ids.has(myFirebaseUid) || firebaseWriteOk;
+    },err=>{
+        console.error("Firebase /players READ FEHLER:",err);
+        const onlineEl=document.getElementById("online");
+        if(onlineEl) onlineEl.textContent="🔴 DATABASE READ FEHLER";
+        showStatus("DATABASE RULES BLOCKIEREN /players — READ ERLAUBEN");
     });
 
     onChildAdded(multiplayer.shotsRef,snap=>{
@@ -1550,8 +1596,8 @@ onAuthStateChanged(firebaseAuth,user=>{
     });
 
     const onlineEl=document.getElementById("online");
-    if(onlineEl) onlineEl.textContent="🟢 ONLINE: 1";
-    showStatus("GLOBAL LOBBY ONLINE");
+    if(onlineEl) onlineEl.textContent="🟡 GLOBAL LOBBY: VERBINDE...";
+    showStatus("GLOBAL LOBBY WIRD VERBUNDEN...");
     setTimeout(()=>showStatus(""),1800);
 });
 
@@ -1562,7 +1608,14 @@ function sendPlayerState(force=false){
     lastNetworkSend=now;
 
     const state=getPlayerState();
-    update(multiplayer.myRef,state).catch(()=>{});
+    update(multiplayer.myRef,state).then(()=>{
+        firebaseWriteOk=true;
+    }).catch(err=>{
+        firebaseWriteOk=false;
+        console.warn("/players update fehlgeschlagen:",err);
+        const onlineEl=document.getElementById("online");
+        if(onlineEl) onlineEl.textContent="🔴 DATABASE WRITE FEHLER";
+    });
 }
 
 function sendNetworkShot(start,direction){
