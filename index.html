@@ -244,7 +244,8 @@ button{
 #hitmarker{position:fixed;left:50%;top:50%;width:34px;height:34px;transform:translate(-50%,-50%);pointer-events:none;z-index:70;opacity:0;}
 #hitmarker:before,#hitmarker:after{content:"";position:absolute;inset:7px;border-top:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(45deg);}
 #bloodVignette{position:fixed;inset:0;pointer-events:none;z-index:65;background:radial-gradient(circle,transparent 45%,rgba(130,0,0,.42) 100%);opacity:0;transition:opacity .08s;}
-#scoreboard{position:fixed;left:18px;top:18px;min-width:180px;padding:9px 12px;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.18);border-radius:8px;color:#fff;font:700 12px Arial;z-index:45;pointer-events:none;}
+#online{position:fixed;left:18px;top:18px;min-width:180px;padding:9px 12px;background:rgba(0,0,0,.52);border:1px solid rgba(255,255,255,.2);border-radius:8px;color:#fff;font:700 13px Arial;z-index:45;pointer-events:none;}
+#scoreboard{position:fixed;left:18px;top:56px;min-width:180px;padding:9px 12px;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.18);border-radius:8px;color:#fff;font:700 12px Arial;z-index:45;pointer-events:none;}
 
 </style>
 </head>
@@ -303,7 +304,8 @@ C Molotov: 2
 <div id="status"></div>
 <div id="hitmarker"></div>
 <div id="bloodVignette"></div>
-<div id="scoreboard">PLAYERS: 1</div>
+<div id="online">🟢 ONLINE: 1</div>
+<div id="scoreboard">KILLS: 0 &nbsp; DEATHS: 0</div>
 
 <script type="module">
 
@@ -1329,6 +1331,8 @@ let lastSentHealth = health;
 let playerName = "Player";
 let kills = 0;
 let deaths = 0;
+let lastProcessedDeath = {};
+let networkClock = 0;
 
 const multiplayer = {
     playersRef:null,
@@ -1416,6 +1420,12 @@ function updateRemotePlayer(uid,data){
     );
     root.rotation.y=Number(data.yaw)||0;
     root.userData.health=Number(data.health ?? 100);
+    // Netzwerkziel speichern. Die Darstellung wird weich dorthin interpoliert.
+    root.userData.targetPosition = new THREE.Vector3(
+        Number(data.x)||0, Number(data.y)||0, Number(data.z)||0
+    );
+    root.userData.targetYaw = Number(data.yaw)||0;
+    root.userData.lastNetworkTime = performance.now();
 }
 
 function removeRemotePlayer(uid){
@@ -1433,6 +1443,19 @@ function removeRemotePlayer(uid){
     remotePlayers.delete(uid);
 }
 
+
+function updateRemoteInterpolation(dt){
+    const smooth = 1 - Math.exp(-dt * 18);
+    for(const root of remotePlayers.values()){
+        const target = root.userData.targetPosition;
+        if(!target) continue;
+        root.position.lerp(target, smooth);
+        let targetYaw = Number(root.userData.targetYaw||0);
+        let diff = ((targetYaw-root.rotation.y+Math.PI)%(Math.PI*2))-Math.PI;
+        root.rotation.y += diff * smooth;
+    }
+}
+
 function getPlayerState(){
     return {
         x:Number(camera.position.x.toFixed(3)),
@@ -1444,6 +1467,7 @@ function getPlayerState(){
         name:playerName,
         kills,
         deaths,
+        deathSeq:0,
         weapon:currentWeapon,
         ts:Date.now()
     };
@@ -1477,13 +1501,29 @@ onAuthStateChanged(firebaseAuth,user=>{
     onChildChanged(multiplayer.playersRef,snap=>{
         if(snap.key!==myFirebaseUid){
             const before=remotePlayers.get(snap.key)?.userData.health??100;
-            updateRemotePlayer(snap.key,snap.val());
-            const after=Number(snap.val()?.health??100);
-            if(before>0 && after<=0){ showStatus((snap.val()?.name||"PLAYER")+" AUSGESCHALTET"); }
+            const data=snap.val()||{};
+            updateRemotePlayer(snap.key,data);
+            const after=Number(data.health??100);
+            if(before>0 && after<=0){
+                showStatus((data.name||"PLAYER")+" AUSGESCHALTET");
+                // Genau einen Kill für den Spieler gutschreiben, der den letzten Treffer gesetzt hat.
+                const deathToken=String(data.deathSeq||data.ts||after);
+                if(data.lastHitBy===myFirebaseUid && lastProcessedDeath[snap.key]!==deathToken){
+                    lastProcessedDeath[snap.key]=deathToken;
+                    kills++;
+                    sendPlayerState(true);
+                    updateScoreboard();
+                }
+            }
         }
     });
     onChildRemoved(multiplayer.playersRef,snap=>{
         removeRemotePlayer(snap.key);
+    });
+
+    onValue(multiplayer.playersRef,snap=>{
+        const count=snap.exists()?Object.keys(snap.val()||{}).length:0;
+        document.getElementById("online").textContent="🟢 ONLINE: "+count;
     });
 
     onChildAdded(multiplayer.shotsRef,snap=>{
@@ -1500,7 +1540,7 @@ onAuthStateChanged(firebaseAuth,user=>{
 function sendPlayerState(force=false){
     if(!multiplayerReady || !multiplayer.myRef || !myFirebaseUid) return;
     const now=performance.now();
-    if(!force && now-lastNetworkSend<100) return;
+    if(!force && now-lastNetworkSend<50) return;
     lastNetworkSend=now;
 
     const state=getPlayerState();
@@ -3902,9 +3942,11 @@ function playerDeath(){
     locked=false;
     mouseDown=false;
 
+    deaths++;
     if(multiplayerReady && multiplayer.myRef){
-        update(multiplayer.myRef,{health:0,deaths:deaths,ts:Date.now()}).catch(()=>{});
+        update(multiplayer.myRef,{health:0,deaths:deaths,deathSeq:Date.now(),ts:Date.now()}).catch(()=>{});
     }
+    updateScoreboard();
 
     showStatus("AUSGESCHALTET — RESPAWN...");
     weaponGroup.visible=false;
@@ -4107,7 +4149,9 @@ function drawMap(ctx,w){
 function updateMini(){drawMap(mapCtx,360);}
 
 function updateScoreboard(){
-    document.getElementById("scoreboard").textContent="PLAYERS: "+(remotePlayers.size+1)+"  |  K: "+kills+"  D: "+deaths;
+    const online=remotePlayers.size+1;
+    document.getElementById("online").textContent="🟢 ONLINE: "+online;
+    document.getElementById("scoreboard").textContent="KILLS: "+kills+"  |  DEATHS: "+deaths;
 }
 
 function updateNameTags(){
@@ -4306,8 +4350,9 @@ function animate(){
 
 
     updatePlayer(dt);
+    updateRemoteInterpolation(dt);
 
-    // Position/Rotation etwa 10x pro Sekunde synchronisieren.
+    // 20x pro Sekunde: deutlich flüssigere Multiplayer-Bewegung.
     sendPlayerState();
 
     updateDash(dt);
