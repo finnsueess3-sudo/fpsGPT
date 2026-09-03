@@ -266,7 +266,7 @@ button{
     <p>R — Nachladen</p>
     <p>1–4 — Waffen wechseln</p>
     <p>Rechtsklick — Sniper Scope</p>
-    <p>Q — Granate · E — Flash · C — Molotov · X — Airstrike-Karte</p>
+    <p>Q — Granate · E — Flash · C — Molotov · X — Airstrike-Karte · Y — Attacke</p>
     <button id="startButton">START</button>
 </div>
 
@@ -347,11 +347,7 @@ const scene=new THREE.Scene();
 
 scene.background=new THREE.Color(0x87999e);
 
-scene.fog=new THREE.Fog(
-    0x87999e,
-    55,
-    235
-);
+scene.fog=null;
 
 
 /* ============================================================
@@ -381,24 +377,46 @@ scene.add(camera);
 ============================================================ */
 
 const renderer=new THREE.WebGLRenderer({
-    antialias:true
+    antialias:false,
+    alpha:false,
+    powerPreference:"low-power",
+    preserveDrawingBuffer:false
 });
+renderer.setClearColor(0x87999e,1);
 
 renderer.setSize(
     innerWidth,
     innerHeight
 );
 
-renderer.setPixelRatio(
-    Math.min(window.devicePixelRatio || 1,1.75)
-);
-
-renderer.shadowMap.enabled=true;
-renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.setPixelRatio(1);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.NoToneMapping;
+renderer.shadowMap.enabled=false;
 
 document.body.appendChild(
     renderer.domElement
 );
+
+// EARLY INPUT BOOTSTRAP: this is registered before multiplayer/gameplay setup
+// so a Firebase or later initialization problem can never disable START/Y.
+let earlyStartRequested=false;
+let earlyMeleeRequested=false;
+const earlyStartButton=document.getElementById("startButton");
+const earlyStartScreen=document.getElementById("start");
+if(earlyStartButton){
+    earlyStartButton.addEventListener("click",()=>{
+        earlyStartRequested=true;
+        if(earlyStartScreen) earlyStartScreen.style.display="none";
+        locked=true;
+        gameOver=false;
+        try{ if(typeof weaponGroup!=="undefined") weaponGroup.visible=true; }catch(e){}
+        try{ renderer.domElement.requestPointerLock?.(); }catch(e){}
+    });
+}
+addEventListener("keydown",e=>{
+    if(e.code==="KeyY" || e.code==="KeyZ" || String(e.key||"").toLowerCase()==="y") earlyMeleeRequested=true;
+});
 
 
 /* ============================================================
@@ -409,9 +427,10 @@ scene.add(
     new THREE.HemisphereLight(
         0xffffff,
         0x26343a,
-        2
+        2.8
     )
 );
+scene.add(new THREE.AmbientLight(0xffffff,1.1));
 
 const sun=new THREE.DirectionalLight(
     0xffffff,
@@ -434,6 +453,28 @@ sun.shadow.camera.top=130;
 sun.shadow.camera.bottom=-130;
 
 scene.add(sun);
+
+// SAFE RENDER MODE: keep the full map, but make sure every existing mesh
+// is visible even on browsers/GPUs that struggle with StandardMaterial + shadows.
+function makeSceneMaterialsSafe(){
+    scene.traverse(obj=>{
+        if(!obj.isMesh || !obj.material) return;
+        const mats=Array.isArray(obj.material)?obj.material:[obj.material];
+        obj.material=mats.map(m=>{
+            if(!m) return m;
+            if(m.isMeshBasicMaterial) return m;
+            const basic=new THREE.MeshBasicMaterial({
+                color:m.color?m.color.clone():new THREE.Color(0xffffff),
+                transparent:!!m.transparent,
+                opacity:m.opacity??1,
+                side:m.side??THREE.FrontSide,
+                depthWrite:m.depthWrite!==false
+            });
+            return basic;
+        });
+        if(obj.material.length===1) obj.material=obj.material[0];
+    });
+}
 
 
 /* ============================================================
@@ -1446,6 +1487,12 @@ function updateRemotePlayer(uid,data){
     if(root.userData.nameTag) root.userData.nameTag.textContent=String(data.name||"Player").slice(0,16);
 
     const hp=Number(data.health ?? 100);
+    const previousHp=Number(root.userData.health ?? hp);
+    if(hp<previousHp && hp>0){
+        root.userData.hitTimer=.16;
+        root.userData.hitSide=(Number(data.yaw||0)-root.rotation.y);
+        bloodEffect(root.position.clone().add(new THREE.Vector3(0,1.2,0)),false);
+    }
     if(hp<=0){
         if(!root.userData.dead){
             root.userData.dead=true;
@@ -1512,6 +1559,13 @@ function updateRemoteInterpolation(dt){
             p.spine.rotation.z=moving?Math.sin(phase*2)*.035:0;
             p.pelvis.rotation.y=moving?Math.sin(phase)*.025:0;
             p.gun.rotation.x=-.04+(moving?Math.abs(Math.sin(phase))*-.035:0);
+            if(root.userData.hitTimer>0){
+                root.userData.hitTimer=Math.max(0,root.userData.hitTimer-dt);
+                const kick=(root.userData.hitTimer/.16);
+                p.spine.rotation.z += Math.sin(phase)*.10*kick;
+                p.shoulderL.rotation.z += .22*kick;
+                p.shoulderR.rotation.z -= .18*kick;
+            }
         }
         root.userData.lastAnimPos.copy(root.position);
     }
@@ -1656,7 +1710,7 @@ onAuthStateChanged(firebaseAuth,user=>{
         const fx=snap.val();
         if(!fx || fx.uid===myFirebaseUid) return;
         receiveNetworkEffect(fx);
-        setTimeout(()=>remove(ref(firebaseDB,"effects/"+snap.key)).catch(()=>{}),12000);
+        setTimeout(()=>remove(ref(firebaseDB,"effects/"+snap.key)).catch(()=>{}),5000);
     });
 
     const onlineEl=document.getElementById("online");
@@ -1668,7 +1722,7 @@ onAuthStateChanged(firebaseAuth,user=>{
 function sendPlayerState(force=false){
     if(!multiplayerReady || !multiplayer.myRef || !myFirebaseUid) return;
     const now=performance.now();
-    if(!force && now-lastNetworkSend<33) return;
+    if(!force && now-lastNetworkSend<50) return;
     lastNetworkSend=now;
 
     const state=getPlayerState();
@@ -1705,6 +1759,8 @@ function receiveNetworkEffect(fx){
     }else if(type==='rocket'){
         const target=pos;
         launchRocket(target,new THREE.Vector3(Number(fx.dx)||0,0,Number(fx.dz)||0),true);
+    }else if(type==='melee'){
+        showRemoteMeleeImpact(pos);
     }
 }
 
@@ -1725,9 +1781,9 @@ function sendNetworkShot(start,direction){
         x:Number(start.x.toFixed(3)),
         y:Number(start.y.toFixed(3)),
         z:Number(start.z.toFixed(3)),
-        dx:Number(networkThrowDirection.x.toFixed(4)),
-        dy:Number(networkThrowDirection.y.toFixed(4)),
-        dz:Number(networkThrowDirection.z.toFixed(4)),
+        dx:Number(direction.x.toFixed(4)),
+        dy:Number(direction.y.toFixed(4)),
+        dz:Number(direction.z.toFixed(4)),
         weapon:currentWeapon,
         ts:Date.now()
     }).catch(()=>{});
@@ -1738,16 +1794,22 @@ function createNetworkTracer(shot){
     const dir=new THREE.Vector3(shot.dx,shot.dy,shot.dz).normalize();
     const end=start.clone().add(dir.multiplyScalar(55));
 
-    const geo=new THREE.BufferGeometry().setFromPoints([start,end]);
-    const mat=new THREE.LineBasicMaterial({color:0xffc85a,transparent:true,opacity:.85});
+    const geo=new THREE.BufferGeometry().setFromPoints([start,start.clone()]);
+    const mat=new THREE.LineBasicMaterial({color:0xffc85a,transparent:true,opacity:.95});
     const line=new THREE.Line(geo,mat);
     scene.add(line);
-
-    setTimeout(()=>{
-        scene.remove(line);
-        geo.dispose();
-        mat.dispose();
-    },90);
+    const started=performance.now();
+    const duration=120;
+    const tick=()=>{
+        const t=Math.min(1,(performance.now()-started)/duration);
+        const p=start.clone().lerp(end,t);
+        const tail=start.clone().lerp(p,Math.max(0,t-.22)/Math.max(.001,t));
+        geo.setFromPoints([tail,p]);
+        mat.opacity=.95*(1-t);
+        if(t<1)requestAnimationFrame(tick);
+        else{scene.remove(line);geo.dispose();mat.dispose();}
+    };
+    tick();
 }
 
 function showHitMarker(){
@@ -1797,7 +1859,8 @@ function checkRemoteHit(start,direction,damage){
         for(const zoneName of ["head","chest","leftArm","rightArm","leftLeg","rightLeg"]){
             const zone=zones[zoneName];
             if(!zone) continue;
-            const box=new THREE.Box3().setFromObject(zone);
+            const box=zone.userData._hitBox||(zone.userData._hitBox=new THREE.Box3());
+            box.setFromObject(zone);
             const hit=new THREE.Vector3();
             if(ray.intersectBox(box,hit)){
                 const dist=start.distanceTo(hit);
@@ -1839,12 +1902,173 @@ startFirebaseMultiplayer();
 
 
 /* ============================================================
+   START / GAME INPUT FIX
+============================================================ */
+
+function startGame(){
+    const input=document.getElementById("usernameInput");
+    playerName=(input?.value||"Player").trim().replace(/[^a-zA-Z0-9_ÄÖÜäöüß -]/g,"").slice(0,16)||"Player";
+    const start=document.getElementById("start");
+    if(start) start.style.display="none";
+
+    // Always put the player into a known visible position.
+    camera.position.set(0,player.eyeHeight,78);
+    yaw=0; pitch=0;
+    camera.rotation.set(0,0,0,"YXZ");
+    camera.lookAt(0,1,0);
+    gameOver=false;
+    locked=true;
+    weaponGroup.visible=true;
+    player.velocity.set(0,0,0);
+    player.grounded=true;
+    try{ renderer.setClearColor(0x87999e,1); }catch(e){}
+    try{ sendPlayerState(true); }catch(e){}
+    showStatus("GLOBAL LOBBY ONLINE");
+    setTimeout(()=>showStatus(""),1200);
+    try{ renderer.domElement.requestPointerLock?.(); }catch(e){}
+    earlyStartRequested=true;
+}
+
+// Enter also starts the game through the same safe path.
+document.getElementById("usernameInput")?.addEventListener("keydown",e=>{
+    if(e.code==="Enter") startGame();
+});
+
+renderer.domElement.addEventListener("click",()=>{
+    if(!gameOver && locked && document.pointerLockElement!==renderer.domElement){
+        try{ renderer.domElement.requestPointerLock(); }catch(e){}
+    }
+});
+
+
+function showMeleeSlash(){
+    const g=new THREE.Group();
+    const mat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:1,side:THREE.DoubleSide,depthWrite:false});
+    const arc1=new THREE.Mesh(new THREE.TorusGeometry(.82,.045,7,42,2.65),mat);
+    const arc2=new THREE.Mesh(new THREE.TorusGeometry(.64,.028,7,34,2.45),mat);
+    arc1.rotation.x=-Math.PI/2; arc1.rotation.z=-1.15;
+    arc2.rotation.x=-Math.PI/2; arc2.rotation.z=-1.05;
+    g.add(arc1,arc2);
+    const blade=new THREE.Mesh(new THREE.BoxGeometry(.075,.075,1.9),mat);
+    blade.position.set(.18,0,-.72);
+    blade.rotation.y=.52;
+    g.add(blade);
+    const sparkMat=new THREE.MeshBasicMaterial({color:0xffd66b,transparent:true,opacity:1,depthWrite:false});
+    const sparks=[];
+    for(let i=0;i<10;i++){
+        const s=new THREE.Mesh(new THREE.SphereGeometry(.025+Math.random()*.018,5,5),sparkMat);
+        s.position.set((Math.random()-.5)*.65,(Math.random()-.5)*.4,-1.05-Math.random()*.55);
+        s.userData.v=new THREE.Vector3((Math.random()-.5)*3,Math.random()*1.4+.2,(Math.random()-.5)*1.8);
+        g.add(s); sparks.push(s);
+    }
+    camera.add(g);
+    g.position.set(.05,-.10,-1.18);
+    const started=performance.now();
+    const tick=()=>{
+        const t=(performance.now()-started)/1000;
+        const u=Math.min(1,t/.42);
+        const swing=Math.sin(u*Math.PI);
+        g.rotation.z=-1.25+u*2.9;
+        g.rotation.y=-.35+u*1.15;
+        g.position.x=.05+Math.sin(u*Math.PI)*.30;
+        g.position.y=-.10+Math.sin(u*Math.PI)*.14;
+        g.position.z=-1.18+Math.sin(u*Math.PI)*.18;
+        g.scale.setScalar(.65+u*.62);
+        mat.opacity=Math.max(0,1-u);
+        sparkMat.opacity=Math.max(0,1-u*1.15);
+        sparks.forEach(s=>{s.position.addScaledVector(s.userData.v,.016);s.userData.v.y-=4.5*.016;});
+        g.children.forEach((c,idx)=>{
+            if(idx>1 && c.userData.v)c.position.addScaledVector(c.userData.v,.016);
+        });
+        if(t<.30) requestAnimationFrame(tick);
+        else {camera.remove(g);g.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});}
+    };
+    tick();
+
+    // Strong but short camera/weapon swing.
+    weaponRecoilRot += .42;
+    weaponRecoilZ -= .18;
+    pitch=Math.max(-Math.PI/2+.05,Math.min(Math.PI/2-.05,pitch-.035));
+}
+
+function showRemoteMeleeImpact(pos){
+    const g=new THREE.Group();
+    g.position.copy(pos);
+    const ring=new THREE.Mesh(new THREE.TorusGeometry(.24,.035,6,18),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.9,depthWrite:false}));
+    ring.rotation.x=Math.PI/2;
+    g.add(ring);
+    const sparks=[];
+    for(let i=0;i<7;i++){
+        const m=new THREE.Mesh(new THREE.SphereGeometry(.025,5,5),new THREE.MeshBasicMaterial({color:0xffd66b,transparent:true,opacity:.9,depthWrite:false}));
+        m.userData.v=new THREE.Vector3((Math.random()-.5)*2.8,Math.random()*2.2+.2,(Math.random()-.5)*2.8);
+        g.add(m);sparks.push(m);
+    }
+    scene.add(g);
+    const started=performance.now();
+    const tick=()=>{
+        const t=(performance.now()-started)/1000;
+        ring.scale.setScalar(1+t*3.5); ring.material.opacity=Math.max(0,.9-t*3.3);
+        sparks.forEach(m=>{m.position.addScaledVector(m.userData.v,.016);m.userData.v.y-=5*.016;m.material.opacity=Math.max(0,.9-t*3.3);});
+        if(t<.28)requestAnimationFrame(tick);
+        else{scene.remove(g);g.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});}
+    };tick();
+}
+
+function meleeAttack(){
+    if((!locked && !earlyStartRequested && document.getElementById("start")?.style.display!=="none") || gameOver || meleeCooldown>0) return;
+    meleeCooldown=.65;
+    meleeTimer=.42;
+    meleeAnimTime=meleeAnimDuration;
+    weaponGroup.visible=true;
+    weaponRecoilRot += 0.22;
+    weaponRecoilZ -= 0.10;
+    showStatus("⚔ ATTACKE!");
+    showMeleeSlash();
+    setTimeout(()=>{ if(!gameOver) showStatus(""); },300);
+
+    const origin=camera.position.clone();
+    const direction=new THREE.Vector3();
+    camera.getWorldDirection(direction);
+    let best=null,bestDist=3.4;
+    for(const [uid,root] of remotePlayers){
+        if(root.userData.dead) continue;
+        const zones=root.userData.zones||{};
+        for(const zoneName of ["chest","head","leftArm","rightArm","leftLeg","rightLeg"]){
+            const zone=zones[zoneName]; if(!zone) continue;
+            const center=new THREE.Vector3(); zone.getWorldPosition(center);
+            const to=center.clone().sub(origin);
+            const along=to.dot(direction);
+            if(along<0 || along>3.4) continue;
+            const side=to.clone().sub(direction.clone().multiplyScalar(along)).length();
+            if(side<1.05 && along<bestDist){ best={uid,zone:zoneName,point:center}; bestDist=along; }
+        }
+    }
+    if(best){
+        const damage=best.zone==="head"?55:30;
+        showHitMarker();
+        bloodEffect(best.point,best.zone==="head");
+        showRemoteMeleeImpact(best.point);
+        sendNetworkEffect("melee",{x:best.point.x,y:best.point.y,z:best.point.z,zone:best.zone});
+        runTransaction(ref(firebaseDB,"players/"+best.uid),current=>{
+            if(!current) return current;
+            const hp=Math.max(0,Number(current.health??100)-damage);
+            return {...current,health:hp,lastHitBy:myFirebaseUid,lastHitZone:best.zone,ts:Date.now(),deathSeq:hp<=0?Date.now():(current.deathSeq||0)};
+        }).catch(()=>{});
+    }
+}
+
+/* ============================================================
    INPUT
 ============================================================ */
 
 addEventListener("keydown",e=>{
 
     keys[e.code]=true;
+
+    if(e.code==="KeyY"){
+        earlyMeleeRequested=false;
+        meleeAttack();
+    }
 
     if(e.code==="KeyR"){
         if(gameOver){ respawnPlayer(); return; }
@@ -2269,6 +2493,10 @@ const weapons=[
 
 let currentWeapon=2;
 let fireCooldown=0;
+let meleeCooldown=0;
+let meleeTimer=0;
+let meleeAnimTime=0;
+let meleeAnimDuration=.42;
 let reloading=false;
 let scoped=false;
 let reloadTimer=0;
@@ -2998,9 +3226,9 @@ function shoot(){
     const trail=new THREE.Line(
         lineGeo,
         new THREE.LineBasicMaterial({
-            color:0xffa52c,
+            color:0xffc35a,
             transparent:true,
-            opacity:.8
+            opacity:.95
         })
     );
 
@@ -3016,7 +3244,7 @@ function shoot(){
                 w.speed
             ),
 
-        life:1.8,
+        life:0.65,
 
         damage:w.damage
     });
@@ -3792,6 +4020,23 @@ function animateWeapon(dt){
     weaponGroup.rotation.y = weaponSwayX * 0.35;
     weaponGroup.rotation.z = weaponSwayY * 0.25;
 
+    // Heavy Y melee animation: wind-up -> fast swing -> recovery.
+    if(meleeAnimTime>0){
+        const p=1-(meleeAnimTime/meleeAnimDuration);
+        let swing;
+        if(p<.28) swing=p/.28;
+        else if(p<.70) swing=1-(p-.28)/.42;
+        else swing=(1-p)/.30;
+        const fast=Math.sin(Math.min(1,p)*Math.PI);
+        weaponGroup.rotation.x += -.55*swing;
+        weaponGroup.rotation.y += -.95*swing;
+        weaponGroup.rotation.z += .30*swing;
+        weaponGroup.position.x += .16*swing;
+        weaponGroup.position.y += -.08*swing;
+        weaponGroup.position.z += .28*swing;
+        weaponRecoilRot += -.10*fast;
+    }
+
     /* Arme ebenfalls deutlich ruhiger halten */
     const armSmooth = 1 - Math.exp(-dt * 10);
 
@@ -4085,7 +4330,7 @@ function updateRagdolls(dt){
 
         /* several solver passes */
 
-        for(let k=0;k<5;k++){
+        for(let k=0;k<3;k++){
 
             r.joints.forEach(j=>
                 solveJoint(
@@ -4396,7 +4641,7 @@ function updateBullets(dt){
         const end=start.clone().addScaledVector(b.velocity,dt);
         let best=null;
         for(const c of colliders){
-            const box=new THREE.Box3().setFromObject(c);
+            const box=c.userData._staticBox||(c.userData._staticBox=new THREE.Box3().setFromObject(c));
             const hit=segmentAABB(start,end,box);
             if(hit&&(!best||hit.t<best.t))best={...hit};
         }
@@ -4494,6 +4739,10 @@ function animate(){
     // 20x pro Sekunde: deutlich flüssigere Multiplayer-Bewegung.
     sendPlayerState();
 
+    meleeCooldown=Math.max(0,meleeCooldown-dt);
+    meleeTimer=Math.max(0,meleeTimer-dt);
+    meleeAnimTime=Math.max(0,meleeAnimTime-dt);
+
     updateDash(dt);
 
     updateBullets(dt);
@@ -4511,8 +4760,7 @@ function animate(){
     updateScoreboard();
     updateRagdolls(dt);
 
-    updateZone();
-
+    // Zone system is not used in this build.
     updateAccuracyUI();
 
 
@@ -4527,10 +4775,22 @@ function animate(){
    INIT
 ============================================================ */
 
+// Final safety pass: all map meshes created above are converted to an
+// unlit material, so the world cannot disappear because of lighting/shadow issues.
+makeSceneMaterialsSafe();
+
 updateAmmo();
 updateThrowableUI();
 const deathOverlayInit=document.getElementById("deathOverlay"); if(deathOverlayInit) deathOverlayInit.style.display="none";
 updateAccuracyUI();
+
+// Finalize a click that happened during initialization.
+if(earlyStartRequested){
+    try{ startGame(); }catch(e){
+        locked=true; gameOver=false;
+        document.getElementById("start")?.style && (document.getElementById("start").style.display="none");
+    }
+}
 
 animate();
 
