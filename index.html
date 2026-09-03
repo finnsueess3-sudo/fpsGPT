@@ -1413,17 +1413,19 @@ function updateRemotePlayer(uid,data){
     }
     root.userData.lastData=data||{};
     if(root.userData.nameTag) root.userData.nameTag.textContent=String(data.name||"Player").slice(0,16);
-    root.position.set(
+    const target = new THREE.Vector3(
         Number(data.x)||0,
         Number(data.y)||0,
         Number(data.z)||0
     );
-    root.rotation.y=Number(data.yaw)||0;
+    if(!root.userData.initialized){
+        root.position.copy(target);
+        root.rotation.y=Number(data.yaw)||0;
+        root.userData.initialized=true;
+    }
+    // Nur das Ziel setzen. Die Darstellung wird weich interpoliert.
+    root.userData.targetPosition = target;
     root.userData.health=Number(data.health ?? 100);
-    // Netzwerkziel speichern. Die Darstellung wird weich dorthin interpoliert.
-    root.userData.targetPosition = new THREE.Vector3(
-        Number(data.x)||0, Number(data.y)||0, Number(data.z)||0
-    );
     root.userData.targetYaw = Number(data.yaw)||0;
     root.userData.lastNetworkTime = performance.now();
 }
@@ -1478,6 +1480,8 @@ async function startFirebaseMultiplayer(){
         await signInAnonymously(firebaseAuth);
     }catch(err){
         console.warn("Firebase Anonymous Login fehlgeschlagen:",err);
+        const onlineEl=document.getElementById("online");
+        if(onlineEl) onlineEl.textContent="🔴 FIREBASE OFFLINE";
         showStatus("FIREBASE LOGIN FEHLT — ANONYMER LOGIN AKTIVIEREN");
     }
 }
@@ -1522,8 +1526,20 @@ onAuthStateChanged(firebaseAuth,user=>{
     });
 
     onValue(multiplayer.playersRef,snap=>{
-        const count=snap.exists()?Object.keys(snap.val()||{}).length:0;
-        document.getElementById("online").textContent="🟢 ONLINE: "+count;
+        const all=snap.val()||{};
+        const ids=new Set(Object.keys(all));
+
+        // Vollständiger Abgleich: jeder Client sieht garantiert dieselbe globale /players-Lobby.
+        for(const [uid,data] of Object.entries(all)){
+            if(uid!==myFirebaseUid) updateRemotePlayer(uid,data||{});
+        }
+        for(const uid of Array.from(remotePlayers.keys())){
+            if(!ids.has(uid)) removeRemotePlayer(uid);
+        }
+
+        const count=Object.keys(all).length;
+        const onlineEl=document.getElementById("online");
+        if(onlineEl) onlineEl.textContent="🟢 ONLINE: "+count;
     });
 
     onChildAdded(multiplayer.shotsRef,snap=>{
@@ -1533,14 +1549,16 @@ onAuthStateChanged(firebaseAuth,user=>{
         setTimeout(()=>remove(ref(firebaseDB,"shots/"+snap.key)).catch(()=>{}),5000);
     });
 
-    showStatus("MULTIPLAYER ONLINE");
+    const onlineEl=document.getElementById("online");
+    if(onlineEl) onlineEl.textContent="🟢 ONLINE: 1";
+    showStatus("GLOBAL LOBBY ONLINE");
     setTimeout(()=>showStatus(""),1800);
 });
 
 function sendPlayerState(force=false){
     if(!multiplayerReady || !multiplayer.myRef || !myFirebaseUid) return;
     const now=performance.now();
-    if(!force && now-lastNetworkSend<50) return;
+    if(!force && now-lastNetworkSend<33) return;
     lastNetworkSend=now;
 
     const state=getPlayerState();
@@ -4059,6 +4077,8 @@ document.getElementById(
 
     const input=document.getElementById("usernameInput");
     playerName=(input?.value||"Player").trim().replace(/[^a-zA-Z0-9_ÄÖÜäöüß -]/g,"").slice(0,16)||"Player";
+    // Namen und aktuellen Zustand sofort an die globale Lobby senden.
+    sendPlayerState(true);
 
     if(gameOver){
 
