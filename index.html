@@ -1649,6 +1649,31 @@ onAuthStateChanged(firebaseAuth,user=>{
         console.error("onDisconnect Fehler:",err);
     });
 
+    // AUTHORITATIVE OWN HEALTH: Treffer aus Firebase müssen sofort lokal
+    // angewendet werden. Genau das hat in V15 gefehlt: Der Angreifer hat die
+    // HP in Firebase reduziert, aber der getroffene Client hat diese Änderung
+    // nie in seine lokale health-Variable übernommen.
+    onValue(multiplayer.myRef,snap=>{
+        const data=snap.val();
+        if(!data) return;
+        const remoteHp=Math.max(0,Number(data.health ?? 100));
+        const localHp=Number(health);
+        if(remoteHp < localHp){
+            health=remoteHp;
+            lastSentHealth=remoteHp;
+            const hpEl=document.getElementById("health");
+            if(hpEl) hpEl.style.width=remoteHp+"%";
+            if(remoteHp<=0 && !gameOver) playerDeath();
+        }else if(remoteHp>=localHp && localHp<=0){
+            // Respawn darf die lokale HP wieder auf 100 setzen.
+            health=remoteHp;
+            lastSentHealth=remoteHp;
+            const hpEl=document.getElementById("health");
+            if(hpEl) hpEl.style.width=remoteHp+"%";
+        }
+    });
+
+
     onChildAdded(multiplayer.playersRef,snap=>{
         if(snap.key!==myFirebaseUid) addRemotePlayer(snap.key,snap.val());
     });
@@ -4417,6 +4442,7 @@ function damagePlayer(amount){
 
 
 function respawnPlayer(){
+    playerDeath._token=0;
     const spawnPoints=[
         new THREE.Vector3(-118,0,-118),new THREE.Vector3(118,0,-118),
         new THREE.Vector3(-118,0,118),new THREE.Vector3(118,0,118),
@@ -4451,6 +4477,13 @@ function playerDeath(){
     createRagdoll(camera.position.clone());
     const ov=document.getElementById("deathOverlay"); if(ov)ov.style.display="flex";
     showStatus("");
+
+    // Automatischer Respawn: nach kurzer Death-Phase wieder ins Spiel.
+    const deathToken=Date.now();
+    playerDeath._token=deathToken;
+    setTimeout(()=>{
+        if(playerDeath._token===deathToken && gameOver) respawnPlayer();
+    },1800);
 }
 
 /* ============================================================
@@ -4543,7 +4576,8 @@ function launchAirstrike(){
     closeStrikeMap();
     showStatus("AIRSTRIKE INCOMING");
     sendNetworkEffect('airstrike',{spots:spots.map(p=>({x:Number(p.x.toFixed(3)),z:Number(p.z.toFixed(3))}))});
-    setTimeout(()=>createAirstrikePlane(spots,false),1000);
+    // Nicht auf Firebase warten: der eigene Airstrike wird immer lokal gestartet.
+    createAirstrikePlane(spots,false);
 }
 strikeCanvas.addEventListener("click",e=>{
     if(!strikeMode||strikeSpots.length>=4)return;
@@ -4563,8 +4597,9 @@ strikeConfirm.addEventListener("click",e=>{
 });
 function createAirstrikePlane(spots,networkOnly=false){
     const plane=new THREE.Group();
-    const bodyMat=new THREE.MeshStandardMaterial({color:0x4d5559,metalness:.8,roughness:.3});
-    const darkMat=new THREE.MeshStandardMaterial({color:0x171a1c,metalness:.5,roughness:.5});
+    // MeshBasicMaterial macht das Flugzeug auch im Safe-Render-Modus sicher sichtbar.
+    const bodyMat=new THREE.MeshBasicMaterial({color:0x8f9aa0});
+    const darkMat=new THREE.MeshBasicMaterial({color:0x252b2f});
     const body=new THREE.Mesh(new THREE.CylinderGeometry(.34,.48,4.2,12),bodyMat); body.rotation.z=Math.PI/2; plane.add(body);
     const nose=new THREE.Mesh(new THREE.ConeGeometry(.48,1.0,12),bodyMat); nose.rotation.z=-Math.PI/2; nose.position.x=2.45; plane.add(nose);
     const wing=new THREE.Mesh(new THREE.BoxGeometry(.28,5.8,.48),darkMat); wing.position.x=-.15; plane.add(wing);
@@ -4574,15 +4609,15 @@ function createAirstrikePlane(spots,networkOnly=false){
     const start=spots[0].clone(); const end=spots[spots.length-1].clone();
     const dir=end.clone().sub(start); dir.y=0; if(dir.lengthSq()<.01)dir.set(1,0,0); dir.normalize();
     const side=new THREE.Vector3(-dir.z,0,dir.x);
-    plane.position.copy(start).addScaledVector(dir,-10); plane.position.y=12;
+    plane.position.copy(start).addScaledVector(dir,-10); plane.position.y=8;
     plane.rotation.y=Math.atan2(-dir.z,-dir.x);
     scene.add(plane);
-    const duration=3.4, t0=performance.now();
+    const duration=4.0, t0=performance.now();
     const rocketTimes=spots.map((_,i)=>.55+i*.34);
     const fired=new Array(spots.length).fill(false);
     function tick(){
         const t=(performance.now()-t0)/1000; const u=Math.min(1,t/duration);
-        plane.position.copy(start).addScaledVector(dir,(u*40)-10); plane.position.y=12+Math.sin(u*Math.PI)*.7;
+        plane.position.copy(start).addScaledVector(dir,(u*48)-12); plane.position.y=8+Math.sin(u*Math.PI)*.7;
         for(let i=0;i<spots.length;i++) if(!fired[i]&&t>=rocketTimes[i]){
             fired[i]=true;
             if(!networkOnly) sendNetworkEffect('rocket',{x:Number(spots[i].x.toFixed(3)),y:.02,z:Number(spots[i].z.toFixed(3)),dx:Number(dir.x.toFixed(4)),dz:Number(dir.z.toFixed(4))});
@@ -4594,12 +4629,12 @@ function createAirstrikePlane(spots,networkOnly=false){
 }
 function launchRocket(target,dir,networkOnly=false){
     const rocket=new THREE.Group();
-    const bodyMat=new THREE.MeshStandardMaterial({color:0x343a3d,metalness:.8,roughness:.3});
-    const noseMat=new THREE.MeshStandardMaterial({color:0x1a1d1f,metalness:.7,roughness:.35});
+    const bodyMat=new THREE.MeshBasicMaterial({color:0x5f6b70});
+    const noseMat=new THREE.MeshBasicMaterial({color:0x1a1d1f});
     const body=new THREE.Mesh(new THREE.CylinderGeometry(.075,.075,.62,10),bodyMat); rocket.add(body);
     const nose=new THREE.Mesh(new THREE.ConeGeometry(.075,.16,10),noseMat); nose.position.y=-.39; rocket.add(nose);
     const flame=new THREE.Mesh(new THREE.ConeGeometry(.055,.28,8),new THREE.MeshBasicMaterial({color:0xffa32d,transparent:true,opacity:.9})); flame.position.y=.44; rocket.add(flame);
-    rocket.position.set(target.x,11,target.z); scene.add(rocket);
+    rocket.position.set(target.x,8,target.z); scene.add(rocket);
     const start=rocket.position.clone(), end=target.clone(); const t0=performance.now();
     function tick(){
         const t=Math.min(1,(performance.now()-t0)/700); rocket.position.lerpVectors(start,end,t); rocket.rotation.x=Math.PI/2;
