@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>FPS ARENA — CONTAINER HAVEN</title>
+<title>FPS ARENA — CONTAINER HAVEN — V17</title>
 
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1878,23 +1878,76 @@ function hitZoneDamage(base,zone){
     return Math.round(base*.85);
 }
 
+function applyRemoteDamage(uid,damage,zone="chest",source="unknown"){
+    if(!multiplayerReady || !myFirebaseUid || uid===myFirebaseUid) return Promise.resolve(false);
+    const targetRef=ref(firebaseDB,"players/"+uid);
+    const finalDamage=Math.max(1,Math.round(damage));
+    return runTransaction(targetRef,current=>{
+        if(!current) return current;
+        const oldHealth=Math.max(0,Number(current.health??100));
+        if(oldHealth<=0) return current;
+        const newHealth=Math.max(0,oldHealth-finalDamage);
+        return {...current,health:newHealth,lastHitBy:myFirebaseUid,lastHitZone:zone,lastHitSource:source,ts:Date.now(),deathSeq:newHealth<=0?Date.now():(current.deathSeq||0)};
+    }).then(r=>{
+        return !!r.committed;
+    }).catch(err=>{
+        console.warn("Remote-Schaden fehlgeschlagen",source,err);
+        showStatus("DATABASE SCHADEN FEHLER");
+        setTimeout(()=>showStatus(""),500);
+        return false;
+    });
+}
+
+function damageRemoteRadius(position,radius,maxDamage,source="explosion"){
+    const jobs=[];
+    for(const [uid,root] of remotePlayers){
+        if(root.userData.dead) continue;
+        const target=root.userData.targetPosition||root.position;
+        const targetPos=new THREE.Vector3();
+        targetPos.copy(target);
+        const dx=targetPos.x-position.x;
+        const dy=(targetPos.y+0.9)-position.y;
+        const dz=targetPos.z-position.z;
+        const dist=Math.hypot(dx,dy,dz);
+        if(dist>radius) continue;
+        const amount=Math.round(maxDamage*(1-dist/radius));
+        if(amount>0) jobs.push(applyRemoteDamage(uid,amount,"chest",source));
+    }
+    return Promise.all(jobs);
+}
+
 function checkRemoteHit(start,direction,damage){
     const ray=new THREE.Ray(start,direction.clone().normalize());
     let best=null;
     let bestDistance=Infinity;
 
     for(const [uid,root] of remotePlayers){
+        if(root.userData.dead) continue;
         const zones=root.userData.zones||{};
         for(const zoneName of ["head","chest","leftArm","rightArm","leftLeg","rightLeg"]){
             const zone=zones[zoneName];
             if(!zone) continue;
             const box=zone.userData._hitBox||(zone.userData._hitBox=new THREE.Box3());
             box.setFromObject(zone);
+            // Kleine Toleranz gegen Interpolation/Netzwerk-Lag.
+            box.min.x-=.12; box.min.y-=.12; box.min.z-=.12;
+            box.max.x+=.12; box.max.y+=.12; box.max.z+=.12;
             const hit=new THREE.Vector3();
             if(ray.intersectBox(box,hit)){
                 const dist=start.distanceTo(hit);
                 if(dist<bestDistance){bestDistance=dist;best={uid,root,zone:zoneName,hit};}
             }
+        }
+
+        // Fallback: sichtbaren Spieler-Körper als ein gemeinsames Trefferfeld verwenden.
+        const bodyBox=root.userData._bodyHitBox||(root.userData._bodyHitBox=new THREE.Box3());
+        bodyBox.setFromObject(root);
+        bodyBox.min.x-=.28; bodyBox.min.y-=.22; bodyBox.min.z-=.28;
+        bodyBox.max.x+=.28; bodyBox.max.y+=.22; bodyBox.max.z+=.28;
+        const bodyHit=new THREE.Vector3();
+        if(ray.intersectBox(bodyBox,bodyHit)){
+            const dist=start.distanceTo(bodyHit);
+            if(dist<bestDistance){bestDistance=dist;best={uid,root,zone:"chest",hit:bodyHit};}
         }
     }
 
@@ -1911,16 +1964,9 @@ function checkRemoteHit(start,direction,damage){
         strong:best.zone==="head"
     });
 
-    const targetRef=ref(firebaseDB,"players/"+best.uid);
-    runTransaction(targetRef,current=>{
-        if(!current) return current;
-        const oldHealth=Number(current.health??100);
-        const newHealth=Math.max(0,oldHealth-finalDamage);
-        return {...current,health:newHealth,ts:Date.now(),lastHitBy:myFirebaseUid,lastHitZone:best.zone,deathSeq:newHealth<=0?Date.now():(current.deathSeq||0)};
-    }).then(()=>{
-        // Der Kill wird genau einmal über den deathSeq/lastHitBy-Listener vergeben.
-        showStatus("TREFFER — "+(best.root.userData.lastData?.name||"PLAYER"));
-    }).catch(err=>{ console.warn("Schaden konnte nicht synchronisiert werden",err); });
+    applyRemoteDamage(best.uid,finalDamage,best.zone,"bullet").then(ok=>{
+        if(ok) showStatus("TREFFER — "+(best.root.userData.lastData?.name||"PLAYER"));
+    });
     return true;
 }
 
@@ -2075,11 +2121,7 @@ function meleeAttack(){
         bloodEffect(best.point,best.zone==="head");
         showRemoteMeleeImpact(best.point);
         sendNetworkEffect("melee",{x:best.point.x,y:best.point.y,z:best.point.z,zone:best.zone});
-        runTransaction(ref(firebaseDB,"players/"+best.uid),current=>{
-            if(!current) return current;
-            const hp=Math.max(0,Number(current.health??100)-damage);
-            return {...current,health:hp,lastHitBy:myFirebaseUid,lastHitZone:best.zone,ts:Date.now(),deathSeq:hp<=0?Date.now():(current.deathSeq||0)};
-        }).catch(()=>{});
+        applyRemoteDamage(best.uid,damage,best.zone,"melee");
     }
 }
 
@@ -3667,18 +3709,14 @@ function explodeThrowable(p){
         explosionEffect(pos);
         if(p.networkOnly) return;
 
-        /* Safe radial self-damage; no expensive raycast loop. */
+        // Multiplayer-Schaden: alle Gegner im Radius bekommen echten Firebase-Schaden.
+        damageRemoteRadius(pos,6.0,105,"grenade");
+
+        // Die Granate kann weiterhin den eigenen Spieler treffen.
         const dist=camera.position.distanceTo(pos);
-
         if(dist<6.0){
-            const damage=
-                Math.round(
-                    105*
-                    (1-dist/6.0)
-                );
-
-            if(damage>0)
-                damagePlayer(damage);
+            const damage=Math.round(105*(1-dist/6.0));
+            if(damage>0) damagePlayer(damage);
         }
 
     }else if(p.type==="flash"){
@@ -4654,7 +4692,11 @@ function airstrikeEffect(pos){
     }
     const started=performance.now();
     const tick=()=>{const t=(performance.now()-started)/1000;group.scale.setScalar(1+t*2.2);ring.material.opacity=Math.max(0,1-t/1.2);beam.material.opacity=Math.max(0,.34-t*.3);for(const s of sparks){s.position.addScaledVector(s.userData.v,.016);s.userData.v.y-=10*.016;}if(t<1.25)requestAnimationFrame(tick);else scene.remove(group);};tick();
-    const dist=camera.position.distanceTo(pos);if(dist<7)damagePlayer(Math.round(90*(1-dist/7)));
+    if(!networkOnly){
+        damageRemoteRadius(pos,7.0,90,"airstrike");
+        const dist=camera.position.distanceTo(pos);
+        if(dist<7) damagePlayer(Math.round(90*(1-dist/7)));
+    }
 }
 
 /* ============================================================
