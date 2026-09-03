@@ -1725,7 +1725,11 @@ function sendPlayerState(force=false){
     if(!force && now-lastNetworkSend<50) return;
     lastNetworkSend=now;
 
-    const state=getPlayerState();
+    const full=getPlayerState();
+    // Positions/animationen werden häufig synchronisiert. HP und deathSeq
+    // dürfen dabei NICHT ständig zurückgeschrieben werden, sonst überschreibt
+    // der getroffene Spieler den Schaden des Angreifers wieder mit 100 HP.
+    const state={x:full.x,y:full.y,z:full.z,yaw:full.yaw,pitch:full.pitch,name:full.name,kills:full.kills,deaths:full.deaths,weapon:full.weapon,ts:full.ts};
     update(multiplayer.myRef,state).then(()=>{
         firebaseWriteOk=true;
     }).catch(err=>{
@@ -1887,14 +1891,11 @@ function checkRemoteHit(start,direction,damage){
         if(!current) return current;
         const oldHealth=Number(current.health??100);
         const newHealth=Math.max(0,oldHealth-finalDamage);
-        return {...current,health:newHealth,ts:Date.now(),lastHitBy:myFirebaseUid,lastHitZone:best.zone};
+        return {...current,health:newHealth,ts:Date.now(),lastHitBy:myFirebaseUid,lastHitZone:best.zone,deathSeq:newHealth<=0?Date.now():(current.deathSeq||0)};
     }).then(()=>{
-        if(best.root.userData.health-finalDamage<=0){
-            kills++;
-            sendPlayerState(true);
-            showStatus("ELIMINATION — "+(best.root.userData.lastData?.name||"PLAYER"));
-        }
-    }).catch(()=>{});
+        // Der Kill wird genau einmal über den deathSeq/lastHitBy-Listener vergeben.
+        showStatus("TREFFER — "+(best.root.userData.lastData?.name||"PLAYER"));
+    }).catch(err=>{ console.warn("Schaden konnte nicht synchronisiert werden",err); });
     return true;
 }
 
@@ -2065,7 +2066,8 @@ addEventListener("keydown",e=>{
 
     keys[e.code]=true;
 
-    if(e.code==="KeyY"){
+    if(e.code==="KeyY" || String(e.key||"").toLowerCase()==="y" || String(e.key||"").toLowerCase()==="z"){
+        e.preventDefault();
         earlyMeleeRequested=false;
         meleeAttack();
     }
@@ -4240,6 +4242,11 @@ function createRagdoll(position){
         );
 
 
+    // Softer, sichtbarer Ragdoll-Impuls beim Tod.
+    parts.forEach((p,i)=>{
+        const spread=(i%2?-1:1)*(.8+Math.random()*.9);
+        p.vel.set(velocity.x*.25+spread, Math.max(2.5,velocity.y*.15+2.5+Math.random()*2), velocity.z*.25+(Math.random()-.5)*1.4);
+    });
     ragdolls.push({
         root,
         parts,
@@ -4295,10 +4302,11 @@ function updateRagdolls(dt){
 
             p.prev.copy(p.pos);
 
-            p.pos.add(velocity);
-
-            p.pos.y+=
-                -18*dt*dt;
+            // Initialer Todesimpuls + Schwerkraft für lebendigere Ragdolls.
+            p.vel.multiplyScalar(Math.pow(.92,dt*60));
+            p.vel.y += -18*dt;
+            p.pos.addScaledVector(p.vel,dt);
+            p.pos.add(velocity.multiplyScalar(.35));
 
             /* floor */
 
@@ -4425,6 +4433,10 @@ function respawnPlayer(){
     updateAmmo(); updateThrowableUI(); document.getElementById("health").style.width="100%";
     gameOver=false; locked=true; weaponGroup.visible=true;
     const ov=document.getElementById("deathOverlay"); if(ov)ov.style.display="none";
+    if(multiplayerReady&&multiplayer.myRef){
+        lastSentHealth=100;
+        update(multiplayer.myRef,{health:100,lastHitBy:null,lastHitZone:null,deathSeq:Date.now(),ts:Date.now()}).catch(()=>{});
+    }
     showStatus("RESPAWN — STARTPOSITION");
     sendPlayerState(true);
 }
@@ -4538,7 +4550,11 @@ strikeCanvas.addEventListener("click",e=>{
     const r=strikeCanvas.getBoundingClientRect();
     const x=(e.clientX-r.left)/r.width*720, y=(e.clientY-r.top)/r.height*720;
     const p=mapToWorld(x,y,720); strikeSpots.push(p); drawMap(strikeCtx,720);
-    if(strikeSpots.length===4)strikeConfirm.style.display="block";
+    if(strikeSpots.length===4){
+        strikeConfirm.style.display="block";
+        showStatus("4 ZIELE GEWÄHLT — AIRSTRIKE STARTET");
+        setTimeout(()=>{ if(strikeMode && strikeSpots.length===4) launchAirstrike(); },120);
+    }
 });
 strikeConfirm.addEventListener("click",e=>{
     e.preventDefault();
@@ -4558,15 +4574,15 @@ function createAirstrikePlane(spots,networkOnly=false){
     const start=spots[0].clone(); const end=spots[spots.length-1].clone();
     const dir=end.clone().sub(start); dir.y=0; if(dir.lengthSq()<.01)dir.set(1,0,0); dir.normalize();
     const side=new THREE.Vector3(-dir.z,0,dir.x);
-    plane.position.copy(start).addScaledVector(dir,-10); plane.position.y=28;
+    plane.position.copy(start).addScaledVector(dir,-10); plane.position.y=12;
     plane.rotation.y=Math.atan2(-dir.z,-dir.x);
     scene.add(plane);
-    const duration=2.8, t0=performance.now();
+    const duration=3.4, t0=performance.now();
     const rocketTimes=spots.map((_,i)=>.55+i*.34);
     const fired=new Array(spots.length).fill(false);
     function tick(){
         const t=(performance.now()-t0)/1000; const u=Math.min(1,t/duration);
-        plane.position.copy(start).addScaledVector(dir,(u*40)-10); plane.position.y=28+Math.sin(u*Math.PI)*1.2;
+        plane.position.copy(start).addScaledVector(dir,(u*40)-10); plane.position.y=12+Math.sin(u*Math.PI)*.7;
         for(let i=0;i<spots.length;i++) if(!fired[i]&&t>=rocketTimes[i]){
             fired[i]=true;
             if(!networkOnly) sendNetworkEffect('rocket',{x:Number(spots[i].x.toFixed(3)),y:.02,z:Number(spots[i].z.toFixed(3)),dx:Number(dir.x.toFixed(4)),dz:Number(dir.z.toFixed(4))});
@@ -4583,7 +4599,7 @@ function launchRocket(target,dir,networkOnly=false){
     const body=new THREE.Mesh(new THREE.CylinderGeometry(.075,.075,.62,10),bodyMat); rocket.add(body);
     const nose=new THREE.Mesh(new THREE.ConeGeometry(.075,.16,10),noseMat); nose.position.y=-.39; rocket.add(nose);
     const flame=new THREE.Mesh(new THREE.ConeGeometry(.055,.28,8),new THREE.MeshBasicMaterial({color:0xffa32d,transparent:true,opacity:.9})); flame.position.y=.44; rocket.add(flame);
-    rocket.position.set(target.x,27,target.z); scene.add(rocket);
+    rocket.position.set(target.x,11,target.z); scene.add(rocket);
     const start=rocket.position.clone(), end=target.clone(); const t0=performance.now();
     function tick(){
         const t=Math.min(1,(performance.now()-t0)/700); rocket.position.lerpVectors(start,end,t); rocket.rotation.x=Math.PI/2;
