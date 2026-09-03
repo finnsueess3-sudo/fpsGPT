@@ -1343,6 +1343,7 @@ let firebaseWriteOk = false;
 const multiplayer = {
     playersRef:null,
     shotsRef:null,
+    effectsRef:null,
     myRef:null,
     connectedRef:null
 };
@@ -1551,6 +1552,7 @@ onAuthStateChanged(firebaseAuth,user=>{
     myFirebaseUid=user.uid;
     multiplayer.playersRef=ref(firebaseDB,"players");
     multiplayer.shotsRef=ref(firebaseDB,"shots");
+    multiplayer.effectsRef=ref(firebaseDB,"effects");
     multiplayer.myRef=ref(firebaseDB,"players/"+myFirebaseUid);
     multiplayer.connectedRef=ref(firebaseDB,".info/connected");
     multiplayerReady=true;
@@ -1649,6 +1651,14 @@ onAuthStateChanged(firebaseAuth,user=>{
         setTimeout(()=>remove(ref(firebaseDB,"shots/"+snap.key)).catch(()=>{}),5000);
     });
 
+    // Alle Spezialeffekte werden ebenfalls an alle Spieler verteilt.
+    onChildAdded(multiplayer.effectsRef,snap=>{
+        const fx=snap.val();
+        if(!fx || fx.uid===myFirebaseUid) return;
+        receiveNetworkEffect(fx);
+        setTimeout(()=>remove(ref(firebaseDB,"effects/"+snap.key)).catch(()=>{}),12000);
+    });
+
     const onlineEl=document.getElementById("online");
     if(onlineEl) onlineEl.textContent="🟡 GLOBAL LOBBY: VERBINDE...";
     showStatus("GLOBAL LOBBY WIRD VERBUNDEN...");
@@ -1672,6 +1682,41 @@ function sendPlayerState(force=false){
     });
 }
 
+function sendNetworkEffect(type,payload={}){
+    if(!multiplayerReady || !multiplayer.effectsRef || !myFirebaseUid) return;
+    const fxRef=push(multiplayer.effectsRef);
+    set(fxRef,{uid:myFirebaseUid,type,ts:Date.now(),...payload}).catch(()=>{});
+}
+
+function receiveNetworkEffect(fx){
+    const type=fx.type;
+    const pos=new THREE.Vector3(Number(fx.x)||0,Number(fx.y)||0,Number(fx.z)||0);
+    if(type==='grenade'){
+        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'grenade');
+    }else if(type==='flash'){
+        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'flash');
+    }else if(type==='molotov'){
+        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'molotov');
+    }else if(type==='impact'){
+        createBulletImpact(pos,new THREE.Vector3(Number(fx.nx)||0,Number(fx.ny)||1,Number(fx.nz)||0),!!fx.strong);
+    }else if(type==='airstrike'){
+        const spots=Array.isArray(fx.spots)?fx.spots.map(p=>new THREE.Vector3(Number(p.x)||0,.02,Number(p.z)||0)):[];
+        if(spots.length) createAirstrikePlane(spots,true);
+    }else if(type==='rocket'){
+        const target=pos;
+        launchRocket(target,new THREE.Vector3(Number(fx.dx)||0,0,Number(fx.dz)||0),true);
+    }
+}
+
+function networkThrowable(pos,direction,type){
+    direction.normalize();
+    let color=type==='flash'?0xdde6e5:(type==='molotov'?0x74371f:0x464d4e);
+    const mesh=new THREE.Mesh(new THREE.SphereGeometry(.17,12,10),new THREE.MeshStandardMaterial({color,roughness:.4,metalness:type==='grenade'?.7:.15}));
+    mesh.position.copy(pos); scene.add(mesh);
+    const obj={mesh,velocity:direction.multiplyScalar(type==='molotov'?14:16).add(new THREE.Vector3(0,type==='molotov'?4.5:5.5,0)),gravity:-20,life:type==='molotov'?3.5:5,type,bounces:0,radius:.17,networkOnly:true};
+    projectiles.push(obj);
+}
+
 function sendNetworkShot(start,direction){
     if(!multiplayerReady || !multiplayer.shotsRef) return;
     const shotRef=push(multiplayer.shotsRef);
@@ -1680,9 +1725,9 @@ function sendNetworkShot(start,direction){
         x:Number(start.x.toFixed(3)),
         y:Number(start.y.toFixed(3)),
         z:Number(start.z.toFixed(3)),
-        dx:Number(direction.x.toFixed(4)),
-        dy:Number(direction.y.toFixed(4)),
-        dz:Number(direction.z.toFixed(4)),
+        dx:Number(networkThrowDirection.x.toFixed(4)),
+        dy:Number(networkThrowDirection.y.toFixed(4)),
+        dz:Number(networkThrowDirection.z.toFixed(4)),
         weapon:currentWeapon,
         ts:Date.now()
     }).catch(()=>{});
@@ -1766,6 +1811,13 @@ function checkRemoteHit(start,direction,damage){
     const finalDamage=hitZoneDamage(damage,best.zone);
     showHitMarker();
     bloodEffect(best.hit,best.zone==="head");
+    sendNetworkEffect('impact',{
+        x:Number(best.hit.x.toFixed(3)),
+        y:Number(best.hit.y.toFixed(3)),
+        z:Number(best.hit.z.toFixed(3)),
+        nx:0,ny:1,nz:0,
+        strong:best.zone==="head"
+    });
 
     const targetRef=ref(firebaseDB,"players/"+best.uid);
     runTransaction(targetRef,current=>{
@@ -3027,6 +3079,7 @@ function createThrowable(type){
 
     scene.add(mesh);
 
+    const networkThrowDirection=direction.clone().normalize();
     projectiles.push({
 
         mesh,
@@ -3053,6 +3106,16 @@ function createThrowable(type){
         bounces:0,
 
         radius:.17
+    });
+
+    // Wurf wird für alle anderen Spieler sichtbar.
+    sendNetworkEffect(type,{
+        x:Number(camera.position.x.toFixed(3)),
+        y:Number(camera.position.y.toFixed(3)),
+        z:Number(camera.position.z.toFixed(3)),
+        dx:Number(direction.x.toFixed(4)),
+        dy:Number(direction.y.toFixed(4)),
+        dz:Number(direction.z.toFixed(4))
     });
 }
 
@@ -3343,6 +3406,7 @@ function explodeThrowable(p){
 
     if(p.type==="grenade"){
         explosionEffect(pos);
+        if(p.networkOnly) return;
 
         /* Safe radial self-damage; no expensive raycast loop. */
         const dist=camera.position.distanceTo(pos);
@@ -3359,10 +3423,11 @@ function explodeThrowable(p){
         }
 
     }else if(p.type==="flash"){
-        flashEffect();
+        if(!p.networkOnly || camera.position.distanceTo(pos)<12) flashEffect();
 
     }else if(p.type==="molotov"){
         molotovEffect(pos);
+        if(p.networkOnly) return;
     }
 }
 
@@ -4209,7 +4274,8 @@ function launchAirstrike(){
     const spots=strikeSpots.map(p=>new THREE.Vector3(p.x,.02,p.z)).sort((a,b)=>a.x-b.x);
     closeStrikeMap();
     showStatus("AIRSTRIKE INCOMING");
-    setTimeout(()=>createAirstrikePlane(spots),1000);
+    sendNetworkEffect('airstrike',{spots:spots.map(p=>({x:Number(p.x.toFixed(3)),z:Number(p.z.toFixed(3))}))});
+    setTimeout(()=>createAirstrikePlane(spots,false),1000);
 }
 strikeCanvas.addEventListener("click",e=>{
     if(!strikeMode||strikeSpots.length>=4)return;
@@ -4219,7 +4285,7 @@ strikeCanvas.addEventListener("click",e=>{
     if(strikeSpots.length===4)strikeConfirm.style.display="block";
 });
 strikeConfirm.addEventListener("click",launchAirstrike);
-function createAirstrikePlane(spots){
+function createAirstrikePlane(spots,networkOnly=false){
     const plane=new THREE.Group();
     const bodyMat=new THREE.MeshStandardMaterial({color:0x4d5559,metalness:.8,roughness:.3});
     const darkMat=new THREE.MeshStandardMaterial({color:0x171a1c,metalness:.5,roughness:.5});
@@ -4241,12 +4307,16 @@ function createAirstrikePlane(spots){
     function tick(){
         const t=(performance.now()-t0)/1000; const u=Math.min(1,t/duration);
         plane.position.copy(start).addScaledVector(dir,(u*40)-10); plane.position.y=28+Math.sin(u*Math.PI)*1.2;
-        for(let i=0;i<spots.length;i++) if(!fired[i]&&t>=rocketTimes[i]){fired[i]=true;launchRocket(spots[i],dir);}
+        for(let i=0;i<spots.length;i++) if(!fired[i]&&t>=rocketTimes[i]){
+            fired[i]=true;
+            if(!networkOnly) sendNetworkEffect('rocket',{x:Number(spots[i].x.toFixed(3)),y:.02,z:Number(spots[i].z.toFixed(3)),dx:Number(dir.x.toFixed(4)),dz:Number(dir.z.toFixed(4))});
+            launchRocket(spots[i],dir,networkOnly);
+        }
         if(u<1)requestAnimationFrame(tick); else {scene.remove(plane); showStatus("");}
     }
     tick();
 }
-function launchRocket(target,dir){
+function launchRocket(target,dir,networkOnly=false){
     const rocket=new THREE.Group();
     const bodyMat=new THREE.MeshStandardMaterial({color:0x343a3d,metalness:.8,roughness:.3});
     const noseMat=new THREE.MeshStandardMaterial({color:0x1a1d1f,metalness:.7,roughness:.35});
