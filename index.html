@@ -1777,11 +1777,11 @@ function receiveNetworkEffect(fx){
             if(amount>0) damagePlayer(amount);
         }
     }else if(type==='grenade'){
-        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'grenade');
+        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'grenade',Number(fx.speedMultiplier)||1);
     }else if(type==='flash'){
-        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'flash');
+        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'flash',Number(fx.speedMultiplier)||1);
     }else if(type==='molotov'){
-        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'molotov');
+        networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'molotov',Number(fx.speedMultiplier)||1);
     }else if(type==='impact'){
         createBulletImpact(pos,new THREE.Vector3(Number(fx.nx)||0,Number(fx.ny)||1,Number(fx.nz)||0),!!fx.strong);
     }else if(type==='airstrike'){
@@ -1795,12 +1795,12 @@ function receiveNetworkEffect(fx){
     }
 }
 
-function networkThrowable(pos,direction,type){
+function networkThrowable(pos,direction,type,speedMultiplier=1){
     direction.normalize();
     let color=type==='flash'?0xdde6e5:(type==='molotov'?0x74371f:0x464d4e);
     const mesh=new THREE.Mesh(new THREE.SphereGeometry(.17,12,10),new THREE.MeshStandardMaterial({color,roughness:.4,metalness:type==='grenade'?.7:.15}));
     mesh.position.copy(pos); scene.add(mesh);
-    const obj={mesh,velocity:direction.multiplyScalar(type==='molotov'?14:16).add(new THREE.Vector3(0,type==='molotov'?4.5:5.5,0)),gravity:-20,life:type==='molotov'?3.5:5,type,bounces:0,radius:.17,networkOnly:true};
+    const obj={mesh,velocity:direction.multiplyScalar((type==='molotov'?14:16)*Math.max(.05,Number(speedMultiplier)||1)).add(new THREE.Vector3(0,(type==='molotov'?4.5:5.5)*Math.max(.05,Number(speedMultiplier)||1),0)),gravity:-20,life:type==='molotov'?3.5:5,type,bounces:0,radius:.17,networkOnly:true};
     projectiles.push(obj);
 }
 
@@ -1812,9 +1812,9 @@ function sendNetworkShot(start,direction){
         x:Number(start.x.toFixed(3)),
         y:Number(start.y.toFixed(3)),
         z:Number(start.z.toFixed(3)),
-        dx:Number(networkThrowDirection.x.toFixed(4)),
-        dy:Number(networkThrowDirection.y.toFixed(4)),
-        dz:Number(networkThrowDirection.z.toFixed(4)),
+        dx:Number(direction.x.toFixed(4)),
+        dy:Number(direction.y.toFixed(4)),
+        dz:Number(direction.z.toFixed(4)),
         weapon:currentWeapon,
         ts:Date.now()
     }).catch(()=>{});
@@ -2155,20 +2155,16 @@ addEventListener("keydown",e=>{
         selectThrowable("grenade");
     }
 
-    if(e.code==="KeyE")
-        throwFlash();
-
-    if(e.code==="KeyC")
-        throwMolotov();
-
-    // AIRSTRIKE: robust for German/Swiss QWERTZ keyboards and pointer-lock
-    if(e.code==="KeyX" || String(e.key||"").toLowerCase()==="x"){
+    if(e.code==="KeyE"){
         e.preventDefault();
-        if(gameOver) return;
-        if(strikeMode) closeStrikeMap();
-        else openStrikeMap();
-        return;
+        selectThrowable("flash");
     }
+
+    if(e.code==="KeyC"){
+        e.preventDefault();
+        selectThrowable("molotov");
+    }
+
 });
 
 addEventListener("keyup",e=>{
@@ -2555,7 +2551,7 @@ const weapons=[
     {name:"BREACHER",mag:10,ammo:10,reserve:50,damage:82,speed:185,cooldown:.62,spread:.035,automatic:false,scope:false,recoil:.045,reload:1150},
     {name:"VANGUARD AR",mag:30,ammo:30,reserve:120,damage:44,speed:260,cooldown:.105,spread:.010,automatic:true,scope:false,recoil:.017,reload:900},
     {name:"LONGSHOT",mag:5,ammo:5,reserve:25,damage:125,speed:360,cooldown:1.0,spread:.0012,automatic:false,scope:true,recoil:.018,reload:1300},
-    {name:"THUNDER SHOTGUN",mag:8,ammo:8,reserve:48,damage:22,speed:190,cooldown:.78,spread:.085,automatic:false,scope:false,recoil:.060,reload:1250,pellets:5}
+    {name:"THUNDER SHOTGUN",mag:8,ammo:8,reserve:48,damage:22,speed:190,cooldown:.78,spread:.085,automatic:false,scope:false,recoil:.060,reload:1250,pellets:10}
 ];
 
 let currentWeapon=2;
@@ -2566,6 +2562,7 @@ let meleeAnimTime=0;
 let meleeAnimDuration=.42;
 let reloading=false;
 let scoped=false;
+let scopeLevel=0;
 let reloadTimer=0;
 let reloadDuration=0;
 
@@ -2946,6 +2943,7 @@ function selectWeapon(index){
     currentWeapon=index;
     reloading=false;
     scoped=false;
+    scopeLevel=0;
 
     camera.fov=75;
 
@@ -2985,40 +2983,17 @@ selectWeapon(2);
 ============================================================ */
 
 function toggleScope(){
-
-    if(!weapons[currentWeapon].scope)
-        return;
-
-    scoped=!scoped;
-
-    if(scoped){
-
-        camera.fov=10;
-
-        document.getElementById(
-            "scope"
-        ).style.display="block";
-
-        document.getElementById(
-            "crosshair"
-        ).classList.add("sniper");
-
-    }else{
-
-        camera.fov=75;
-
-        document.getElementById(
-            "scope"
-        ).style.display="none";
-
-        document.getElementById(
-            "crosshair"
-        ).classList.remove("sniper");
-    }
-
+    if(!weapons[currentWeapon].scope) return;
+    if(!scoped){ scoped=true; scopeLevel=1; camera.fov=10; }
+    else if(scopeLevel===1){ scopeLevel=2; camera.fov=5; }
+    else { scoped=false; scopeLevel=0; camera.fov=75; }
+    const scopeEl=document.getElementById("scope");
+    const cross=document.getElementById("crosshair");
+    if(scopeEl) scopeEl.style.display=scoped?"block":"none";
+    if(cross) cross.classList.toggle("sniper",scoped);
+    if(scoped) showStatus(scopeLevel===2?"SNIPER — 2X ZOOM":"SNIPER — 1X ZOOM");
     camera.updateProjectionMatrix();
 }
-
 
 /* ============================================================
    MOUSE FIRE
@@ -3035,7 +3010,7 @@ document.addEventListener(
 
         if(e.button===2){
             if(selectedThrowable){
-                throwTwoSelectedThrowable(75);
+                throwTwoSelectedThrowable(3);
             }else{
                 toggleScope();
             }
@@ -3326,7 +3301,8 @@ function createThrowable(type,speedMultiplier=1,offsetX=0){
         z:Number(camera.position.z.toFixed(3)),
         dx:Number(direction.x.toFixed(4)),
         dy:Number(direction.y.toFixed(4)),
-        dz:Number(direction.z.toFixed(4))
+        dz:Number(direction.z.toFixed(4)),
+        speedMultiplier:Number(speedMultiplier)
     });
 }
 
@@ -3339,12 +3315,12 @@ function selectThrowable(type){
     if(gameOver) return;
     const count=type==="grenade"?grenadeCount:(type==="flash"?flashCount:molotovCount);
     if(count<=0){ showStatus("KEINE "+type.toUpperCase()+" MEHR"); return; }
-    selectedThrowable=type; scoped=false; camera.fov=75;
+    selectedThrowable=type; scoped=false; scopeLevel=0; camera.fov=75;
     document.getElementById("scope").style.display="none";
     document.getElementById("crosshair").classList.remove("sniper");
     showThrowableInHand(type);
     document.getElementById("weaponName").textContent=type==="grenade"?"GRENADE":type.toUpperCase();
-    if(type==="grenade") showStatus("GRENADE IN HAND — LMB: 2x · RMB: 75x");
+    showStatus(type.toUpperCase()+" IN HAND — LMB: 2x · RMB: 3x SPEED");
 }
 
 function showThrowableInHand(type){
@@ -4433,7 +4409,7 @@ function respawnPlayer(){
     player.velocity.set(0,0,0); player.grounded=true; health=100;
     weapons.forEach(w=>{w.ammo=w.mag;});
     grenadeCount=3; flashCount=2; molotovCount=2; reloading=false; reloadTimer=0; reloadDuration=0;
-    scoped=false; document.getElementById("scope").style.display="none"; camera.fov=75; camera.updateProjectionMatrix();
+    scoped=false; scopeLevel=0; document.getElementById("scope").style.display="none"; camera.fov=75; camera.updateProjectionMatrix();
     updateAmmo(); updateThrowableUI(); document.getElementById("health").style.width="100%";
     gameOver=false; locked=true; weaponGroup.visible=true;
     const ov=document.getElementById("deathOverlay"); if(ov)ov.style.display="none";
