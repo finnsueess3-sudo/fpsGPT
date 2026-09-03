@@ -1774,7 +1774,12 @@ function sendNetworkEffect(type,payload={}){
 function receiveNetworkEffect(fx){
     const type=fx.type;
     const pos=new THREE.Vector3(Number(fx.x)||0,Number(fx.y)||0,Number(fx.z)||0);
-    if(type==='grenade'){
+    if(type==='damage'){
+        if(fx.targetUid===myFirebaseUid && !gameOver){
+            const amount=Math.max(1,Number(fx.amount)||0);
+            if(amount>0) damagePlayer(amount);
+        }
+    }else if(type==='grenade'){
         networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'grenade');
     }else if(type==='flash'){
         networkThrowable(pos,new THREE.Vector3(Number(fx.dx)||0,Number(fx.dy)||0,Number(fx.dz)||0),'flash');
@@ -1880,31 +1885,25 @@ function hitZoneDamage(base,zone){
 
 function applyRemoteDamage(uid,damage,zone="chest",source="unknown"){
     if(!multiplayerReady || !myFirebaseUid || uid===myFirebaseUid) return Promise.resolve(false);
-    const targetRef=ref(firebaseDB,"players/"+uid);
-    const finalDamage=Math.max(1,Math.round(damage));
-    return runTransaction(targetRef,current=>{
-        if(!current) return current;
-        const oldHealth=Math.max(0,Number(current.health??100));
-        if(oldHealth<=0) return current;
-        const newHealth=Math.max(0,oldHealth-finalDamage);
-        return {...current,health:newHealth,lastHitBy:myFirebaseUid,lastHitZone:zone,lastHitSource:source,ts:Date.now(),deathSeq:newHealth<=0?Date.now():(current.deathSeq||0)};
-    }).then(r=>{
-        return !!r.committed;
-    }).catch(err=>{
-        console.warn("Remote-Schaden fehlgeschlagen",source,err);
-        showStatus("DATABASE SCHADEN FEHLER");
-        setTimeout(()=>showStatus(""),500);
-        return false;
+    const amount=Math.max(1,Math.round(damage));
+    // Der getroffene Client wendet den Schaden lokal an und synchronisiert danach
+    // seine eigenen HP. Dadurch kann ein häufiger Positions-/Transaction-Konflikt
+    // nicht mehr verhindern, dass ein Treffer Schaden verursacht.
+    sendNetworkEffect("damage",{
+        targetUid:uid,
+        amount,
+        zone:String(zone),
+        source:String(source)
     });
+    return Promise.resolve(true);
 }
 
 function damageRemoteRadius(position,radius,maxDamage,source="explosion"){
     const jobs=[];
     for(const [uid,root] of remotePlayers){
         if(root.userData.dead) continue;
-        const target=root.userData.targetPosition||root.position;
         const targetPos=new THREE.Vector3();
-        targetPos.copy(target);
+        root.getWorldPosition(targetPos);
         const dx=targetPos.x-position.x;
         const dy=(targetPos.y+0.9)-position.y;
         const dz=targetPos.z-position.z;
@@ -4676,10 +4675,10 @@ function launchRocket(target,dir,networkOnly=false){
     const start=rocket.position.clone(), end=target.clone(); const t0=performance.now();
     function tick(){
         const t=Math.min(1,(performance.now()-t0)/700); rocket.position.lerpVectors(start,end,t); rocket.rotation.x=Math.PI/2;
-        if(t<1){requestAnimationFrame(tick);}else{scene.remove(rocket); airstrikeEffect(target);}}
+        if(t<1){requestAnimationFrame(tick);}else{scene.remove(rocket); airstrikeEffect(target,networkOnly);}}
     tick();
 }
-function airstrikeEffect(pos){
+function airstrikeEffect(pos,networkOnly=false){
     const group=new THREE.Group();group.position.copy(pos);
     const ring=new THREE.Mesh(new THREE.RingGeometry(1.8,2.1,32),new THREE.MeshBasicMaterial({color:0xffb12b,transparent:true,opacity:.9,side:THREE.DoubleSide}));
     ring.rotation.x=-Math.PI/2;group.add(ring);
